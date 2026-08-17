@@ -6,7 +6,7 @@ import { getUniqueClassesSorted } from '../../utils/studentUtils';
 import {
   Users, Search, Plus, Filter, Edit2, CheckCircle, XCircle,
   Upload, FileText, Calendar, Shield, UserCheck, RefreshCw, X,
-  Eye, EyeOff, Copy, Check
+  Eye, EyeOff, Copy, Check, AlertCircle
 } from 'lucide-react';
 
 export const StudentManagement: React.FC = () => {
@@ -14,6 +14,7 @@ export const StudentManagement: React.FC = () => {
   const [participants, setParticipants] = useState<EventParticipant[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Filters
   const [search, setSearch] = useState<string>('');
@@ -43,17 +44,33 @@ export const StudentManagement: React.FC = () => {
     loadData();
   }, []);
 
+  // Tab Resume listener
+  useEffect(() => {
+    const handleResume = () => {
+      loadData();
+    };
+    window.addEventListener('rt_app_resumed', handleResume);
+    return () => window.removeEventListener('rt_app_resumed', handleResume);
+  }, []);
+
   const loadData = async () => {
     setLoading(true);
-    const [stData, prtData, evtData] = await Promise.all([
-      ApiService.getStudents(),
-      ApiService.getEventParticipants(),
-      ApiService.getEvents()
-    ]);
-    setStudents(stData);
-    setParticipants(prtData);
-    setEvents(evtData);
-    setLoading(false);
+    try {
+      const [stData, prtData, evtData] = await Promise.all([
+        ApiService.getStudents(),
+        ApiService.getEventParticipants(),
+        ApiService.getEvents()
+      ]);
+      setStudents(stData || []);
+      setParticipants(prtData || []);
+      setEvents(evtData || []);
+      setLoadError(null);
+    } catch (err: any) {
+      console.error('Error loading students:', err);
+      setLoadError(err.message || 'Gagal memuat data siswa dari server.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Dynamic unique class options sorted naturally (numeric grade first, then class name)
@@ -271,10 +288,30 @@ export const StudentManagement: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {loading ? (
+              {loading && students.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="p-8 text-center text-slate-400">
-                    Memuat data siswa...
+                    <div className="flex items-center justify-center gap-2">
+                      <RefreshCw className="w-4 h-4 animate-spin text-slate-500" />
+                      <span>Memuat data siswa...</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : loadError && students.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="p-8 text-center bg-rose-50/50">
+                    <div className="max-w-md mx-auto space-y-3">
+                      <AlertCircle className="w-8 h-8 text-rose-500 mx-auto" />
+                      <div className="text-sm font-bold text-rose-900">Data gagal dimuat</div>
+                      <p className="text-xs text-rose-600">{loadError}</p>
+                      <button
+                        onClick={loadData}
+                        className="inline-flex items-center space-x-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition shadow-sm"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Coba Lagi</span>
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ) : filteredStudents.length === 0 ? (

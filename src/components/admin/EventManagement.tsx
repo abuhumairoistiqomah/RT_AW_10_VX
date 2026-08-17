@@ -98,17 +98,31 @@ export const EventManagement: React.FC<EventManagementProps> = ({ currentUser })
     loadAllEvents();
   }, []);
 
+  // Tab Resume listener
+  useEffect(() => {
+    const handleResume = () => {
+      if (selectedEventId) {
+        loadEventDetails(selectedEventId);
+      }
+    };
+    window.addEventListener('rt_app_resumed', handleResume);
+    return () => window.removeEventListener('rt_app_resumed', handleResume);
+  }, [selectedEventId]);
+
   const loadAllEvents = async () => {
     setLoading(true);
     try {
       const allEvents = await ApiService.getEvents();
-      setEvents(allEvents);
-      const active = allEvents.find(e => e.status === 'ACTIVE') || allEvents[0];
-      if (active) {
-        setSelectedEventId(active.event_id);
-        setEventForm(active);
+      if (Array.isArray(allEvents) && allEvents.length > 0) {
+        setEvents(allEvents);
+        setSelectedEventId(prev => {
+          if (prev && allEvents.some(e => e.event_id === prev)) return prev;
+          const active = allEvents.find(e => e.status === 'ACTIVE') || allEvents[0];
+          return active ? active.event_id : prev;
+        });
       }
     } catch (err: any) {
+      console.warn('Gagal memuat daftar event:', err);
       setErrorMsg('Gagal memuat daftar event: ' + (err.message || ''));
     } finally {
       setLoading(false);

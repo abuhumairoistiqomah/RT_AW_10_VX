@@ -39,9 +39,20 @@ export const HalaqahStudentAssignment: React.FC = () => {
     loadEvents();
   }, []);
 
+  // Listen for tab resume event
+  useEffect(() => {
+    const handleResume = () => {
+      if (selectedEventId) {
+        loadData(selectedEventId);
+      }
+    };
+    window.addEventListener('rt_app_resumed', handleResume);
+    return () => window.removeEventListener('rt_app_resumed', handleResume);
+  }, [selectedEventId]);
+
   useEffect(() => {
     if (selectedEventId) {
-      // Reset state on event change
+      // Reset selection on event change
       setSelectedStudentIds([]);
       setTargetHalaqahId('');
       setSuccessMsg('');
@@ -53,34 +64,45 @@ export const HalaqahStudentAssignment: React.FC = () => {
   const loadEvents = async () => {
     try {
       const evts = await ApiService.getEvents();
-      setEvents(evts);
-      const active = evts.find(e => e.status === 'ACTIVE') || evts[0];
-      if (active) setSelectedEventId(active.event_id);
+      if (Array.isArray(evts) && evts.length > 0) {
+        setEvents(evts);
+        setSelectedEventId(prev => {
+          if (prev && evts.some(e => e.event_id === prev)) return prev;
+          const active = evts.find(e => e.status === 'ACTIVE') || evts[0];
+          return active ? active.event_id : prev;
+        });
+      }
     } catch (err: any) {
-      setErrorMsg('Gagal memuat daftar kegiatan: ' + (err.message || ''));
+      console.warn('Gagal memuat daftar kegiatan:', err);
     }
   };
 
   const loadData = async (eventId: string) => {
+    if (!eventId) return;
     setLoading(true);
+    setErrorMsg('');
     try {
       const [bootstrap, capStr] = await Promise.all([
         ApiService.getStudentPlacementBootstrap(eventId),
         ApiService.getConfigValue('default_halaqah_capacity', '15')
       ]);
 
-      setStudents(bootstrap.students);
-      setHalaqahs(bootstrap.halaqahs);
-      setParticipants(bootstrap.participants);
+      setStudents(bootstrap.students || []);
+      setHalaqahs(bootstrap.halaqahs || []);
+      setParticipants(bootstrap.participants || []);
       setMaxCapacity(parseInt(capStr, 10) || 15);
 
-      if (bootstrap.halaqahs.length > 0) {
-        setTargetHalaqahId(bootstrap.halaqahs[0].halaqah_id);
+      if (bootstrap.halaqahs && bootstrap.halaqahs.length > 0) {
+        setTargetHalaqahId(prev => {
+          if (prev && bootstrap.halaqahs.some((h: any) => h.halaqah_id === prev)) return prev;
+          return bootstrap.halaqahs[0].halaqah_id;
+        });
       } else {
         setTargetHalaqahId('');
       }
     } catch (err: any) {
-      setErrorMsg('Gagal memuat data peserta & halaqah: ' + (err.message || ''));
+      console.error('Error loading placement data:', err);
+      setErrorMsg(err.message || 'Gagal memuat data peserta & halaqah dari server.');
     } finally {
       setLoading(false);
     }
@@ -597,12 +619,29 @@ export const HalaqahStudentAssignment: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {loading ? (
+              {loading && students.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="p-8 text-center text-slate-400">
                     <div className="flex items-center justify-center gap-2">
                       <RefreshCw className="w-4 h-4 animate-spin text-slate-500" />
                       <span>Memuat data siswa master & penempatan...</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : errorMsg && students.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="p-8 text-center bg-rose-50/50">
+                    <div className="max-w-md mx-auto space-y-3">
+                      <AlertCircle className="w-8 h-8 text-rose-500 mx-auto" />
+                      <div className="text-sm font-bold text-rose-900">Data gagal dimuat</div>
+                      <p className="text-xs text-rose-600">{errorMsg}</p>
+                      <button
+                        onClick={() => { loadEvents(); loadData(selectedEventId); }}
+                        className="inline-flex items-center space-x-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition shadow-sm"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Coba Lagi</span>
+                      </button>
                     </div>
                   </td>
                 </tr>

@@ -12,20 +12,62 @@ interface AdminDashboardProps {
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigateTab }) => {
   const [data, setData] = useState<any | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const res = await ApiService.getAdminOverview();
+      setData(res);
+      setError(null);
+    } catch (err: any) {
+      console.error('Failed to load admin overview:', err);
+      setError(err.message || 'Gagal memuat ringkasan command center operasional.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    ApiService.getAdminOverview().then(res => {
-      setData(res);
-      setLoading(false);
-    });
+    loadData();
   }, []);
 
-  if (loading || !data) {
+  // Tab Resume listener
+  useEffect(() => {
+    const handleResume = () => {
+      loadData();
+    };
+    window.addEventListener('rt_app_resumed', handleResume);
+    return () => window.removeEventListener('rt_app_resumed', handleResume);
+  }, []);
+
+  if (loading && !data) {
     return (
       <div className="min-h-[60vh] flex items-center justify-center">
         <div className="text-center space-y-3">
           <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
           <p className="text-xs text-slate-500 font-medium">Memuat Command Center Operasional...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && !data) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center p-4">
+        <div className="max-w-md w-full text-center bg-rose-50 border border-rose-200 rounded-2xl p-6 space-y-3 shadow-sm">
+          <div className="w-10 h-10 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto">
+            <AlertTriangle className="w-6 h-6" />
+          </div>
+          <h3 className="text-sm font-bold text-rose-900">Data gagal dimuat</h3>
+          <p className="text-xs text-rose-600">{error}</p>
+          <button
+            onClick={loadData}
+            className="inline-flex items-center space-x-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition shadow-sm"
+          >
+            <Activity className="w-3.5 h-3.5" />
+            <span>Coba Lagi</span>
+          </button>
         </div>
       </div>
     );

@@ -92,6 +92,15 @@ export const Administration: React.FC = () => {
     loadAllData();
   }, []);
 
+  // Tab Resume listener
+  useEffect(() => {
+    const handleResume = () => {
+      loadAllData();
+    };
+    window.addEventListener('rt_app_resumed', handleResume);
+    return () => window.removeEventListener('rt_app_resumed', handleResume);
+  }, []);
+
   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
     setToastMessage({ text, type });
     setTimeout(() => {

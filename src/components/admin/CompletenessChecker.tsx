@@ -10,10 +10,22 @@ export const CompletenessChecker: React.FC = () => {
   const [selectedEventId, setSelectedEventId] = useState<string>('RT2026-02');
   const [report, setReport] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadEvents();
   }, []);
+
+  // Tab Resume listener
+  useEffect(() => {
+    const handleResume = () => {
+      if (selectedEventId) {
+        loadReport(selectedEventId);
+      }
+    };
+    window.addEventListener('rt_app_resumed', handleResume);
+    return () => window.removeEventListener('rt_app_resumed', handleResume);
+  }, [selectedEventId]);
 
   useEffect(() => {
     if (selectedEventId) {
@@ -22,17 +34,35 @@ export const CompletenessChecker: React.FC = () => {
   }, [selectedEventId]);
 
   const loadEvents = async () => {
-    const evts = await ApiService.getEvents();
-    setEvents(evts);
-    const active = evts.find(e => e.status === 'ACTIVE') || evts[0];
-    if (active) setSelectedEventId(active.event_id);
+    try {
+      const evts = await ApiService.getEvents();
+      if (Array.isArray(evts) && evts.length > 0) {
+        setEvents(evts);
+        setSelectedEventId(prev => {
+          if (prev && evts.some(e => e.event_id === prev)) return prev;
+          const active = evts.find(e => e.status === 'ACTIVE') || evts[0];
+          return active ? active.event_id : prev;
+        });
+      }
+    } catch (err: any) {
+      console.warn('Gagal memuat events:', err);
+    }
   };
 
   const loadReport = async (eventId: string) => {
+    if (!eventId) return;
     setLoading(true);
-    const r = await ApiService.getCompletenessReport(eventId);
-    setReport(r);
-    setLoading(false);
+    setError(null);
+    try {
+      const r = await ApiService.getCompletenessReport(eventId);
+      setReport(r);
+      setError(null);
+    } catch (err: any) {
+      console.error('Failed to load completeness report:', err);
+      setError(err.message || 'Gagal memuat laporan kelengkapan operasional.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -69,9 +99,23 @@ export const CompletenessChecker: React.FC = () => {
         </div>
       </div>
 
-      {loading || !report ? (
+      {loading && !report ? (
         <div className="py-12 text-center text-slate-400 text-xs bg-white rounded-xl border border-slate-200">
-          Memeriksa kelengkapan data operasional...
+          <RefreshCw className="w-5 h-5 animate-spin mx-auto text-emerald-600 mb-2" />
+          <span>Memeriksa kelengkapan data operasional...</span>
+        </div>
+      ) : error && !report ? (
+        <div className="py-12 text-center bg-rose-50 border border-rose-200 rounded-2xl p-6 space-y-3">
+          <AlertCircle className="w-8 h-8 text-rose-500 mx-auto" />
+          <h3 className="text-sm font-bold text-rose-900">Data gagal dimuat</h3>
+          <p className="text-xs text-rose-600 max-w-md mx-auto">{error}</p>
+          <button
+            onClick={() => { loadEvents(); loadReport(selectedEventId); }}
+            className="inline-flex items-center space-x-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition shadow-sm"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Coba Lagi</span>
+          </button>
         </div>
       ) : (
         <>

@@ -34,6 +34,9 @@ export default function App() {
   const [assessmentNavState, setAssessmentNavState] = useState<{ studentId?: string; sessionNo?: number }>({});
   const [evaluationNavState, setEvaluationNavState] = useState<{ studentId?: string; sessionConfigId?: string }>({});
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
+  const [authStatus, setAuthStatus] = useState<'VALID' | 'INVALID' | 'CHECKING' | 'GUEST'>(() => {
+    return ApiService.getAuthToken() ? 'CHECKING' : 'GUEST';
+  });
   const [dbStatus, setDbStatus] = useState<{ connected: boolean; message: string }>({
     connected: false,
     message: 'Memeriksa database...'
@@ -43,17 +46,23 @@ export default function App() {
   useEffect(() => {
     const token = ApiService.getAuthToken();
     if (token) {
+      setAuthStatus('CHECKING');
       ApiService.validateSession().then(res => {
         if (res.valid && res.user) {
           setCurrentUser(res.user);
+          setAuthStatus('VALID');
         } else {
           setCurrentUser(null);
           setCurrentRole('PUBLIC');
           setActiveTab('student-progress');
+          setAuthStatus('INVALID');
         }
       }).catch(() => {
         // Keep offline cached user if temporary network issue, do not abruptly logout
+        setAuthStatus('VALID');
       });
+    } else {
+      setAuthStatus('GUEST');
     }
   }, []);
 
@@ -66,10 +75,71 @@ export default function App() {
     });
   }, []);
 
+  // Tab wake / window focus revalidation with debouncing
+  useEffect(() => {
+    let lastRevalidationTime = Date.now();
+
+    const handleTabResume = async () => {
+      const now = Date.now();
+      // Throttle to avoid spamming Apps Script (min 30 seconds interval)
+      if (now - lastRevalidationTime < 30000) return;
+      lastRevalidationTime = now;
+
+      // 1. Re-check health in background
+      ApiService.checkHealth().then(res => {
+        setDbStatus(res);
+      }).catch(() => {
+        setDbStatus({ connected: false, message: 'Database Tidak Terhubung' });
+      });
+
+      // 2. Re-verify session if logged in
+      const token = ApiService.getAuthToken();
+      if (token) {
+        setAuthStatus('CHECKING');
+        try {
+          const res = await ApiService.validateSession();
+          if (res.valid && res.user) {
+            setAuthStatus('VALID');
+            // Notify active components to revalidate in background safely (stale-while-revalidate)
+            window.dispatchEvent(new CustomEvent('rt_app_resumed'));
+          } else {
+            setAuthStatus('INVALID');
+            setCurrentUser(null);
+            setCurrentRole('PUBLIC');
+            setActiveTab('student-progress');
+            setAuthNotice('Sesi login telah berakhir. Silakan masuk kembali.');
+          }
+        } catch {
+          // Transient network issue on wake, retain existing state
+          setAuthStatus('VALID');
+        }
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        handleTabResume();
+      }
+    };
+
+    const onFocus = () => {
+      handleTabResume();
+    };
+
+    window.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      window.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, []);
+
   // Initialize role sync
   useEffect(() => {
     if (currentUser) {
       setCurrentRole(currentUser.role);
+      setAuthStatus('VALID');
       if (currentUser.role === 'TEACHER') {
         setActiveTab('my-halaqah');
       } else if (currentUser.role === 'ADMIN' || currentUser.role === 'COORDINATOR') {
@@ -77,6 +147,7 @@ export default function App() {
       }
     } else {
       setCurrentRole('PUBLIC');
+      setAuthStatus('GUEST');
       setActiveTab('student-progress');
     }
   }, [currentUser]);
@@ -87,8 +158,9 @@ export default function App() {
       const customEvent = e as CustomEvent;
       setCurrentUser(null);
       setCurrentRole('PUBLIC');
+      setAuthStatus('INVALID');
       setActiveTab('student-progress');
-      setAuthNotice(customEvent.detail?.message || 'Sesi Anda telah berakhir atau tidak valid. Silakan login kembali.');
+      setAuthNotice(customEvent.detail?.message || 'Sesi login telah berakhir. Silakan masuk kembali.');
     };
 
     window.addEventListener('rt_auth_expired', handleAuthExpired);
@@ -463,6 +535,27 @@ export default function App() {
               <span className="font-semibold truncate max-w-[140px]">{dbStatus.message}</span>
               {isAdminRole && <Settings className="w-3 h-3 text-slate-500 ml-0.5 shrink-0" />}
             </button>
+
+            {/* Auth Session Status Indicator */}
+            {currentUser && (
+              <div
+                className={`hidden lg:flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition shrink-0 ${
+                  authStatus === 'VALID'
+                    ? 'text-blue-800 bg-blue-50 border-blue-200'
+                    : authStatus === 'CHECKING'
+                    ? 'text-amber-800 bg-amber-50 border-amber-200'
+                    : 'text-rose-800 bg-rose-50 border-rose-200'
+                }`}
+                title={authStatus === 'VALID' ? 'Sesi login terverifikasi aktif' : authStatus === 'CHECKING' ? 'Memverifikasi status sesi...' : 'Sesi tidak valid'}
+              >
+                <div className={`w-2 h-2 rounded-full shrink-0 ${
+                  authStatus === 'VALID' ? 'bg-blue-500' : authStatus === 'CHECKING' ? 'bg-amber-500 animate-pulse' : 'bg-rose-500'
+                }`} />
+                <span className="font-semibold truncate">
+                  {authStatus === 'VALID' ? 'Sesi: Aktif' : authStatus === 'CHECKING' ? 'Sesi: Memeriksa...' : 'Sesi: Expired'}
+                </span>
+              </div>
+            )}
 
             {/* Quick Role Switcher / Login Button */}
             <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">

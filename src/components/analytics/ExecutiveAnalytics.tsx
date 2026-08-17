@@ -22,22 +22,39 @@ export const ExecutiveAnalytics: React.FC = () => {
   // Analytics Data & Loading
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     initData();
   }, []);
 
-  const initData = async () => {
-    const [evts, stds] = await Promise.all([
-      ApiService.getEvents(),
-      ApiService.getStudents()
-    ]);
-    setEvents(evts);
-    setStudents(stds);
+  // Tab Resume listener
+  useEffect(() => {
+    const handleResume = () => {
+      loadAnalytics();
+    };
+    window.addEventListener('rt_app_resumed', handleResume);
+    return () => window.removeEventListener('rt_app_resumed', handleResume);
+  }, [academicYearFilter, selectedEventId, analyticsMode, gradeFilter, genderFilter, halaqahFilter]);
 
-    const active = evts.find(e => e.status === 'ACTIVE') || evts[0];
-    if (active) {
-      setSelectedEventId(active.event_id);
+  const initData = async () => {
+    try {
+      const [evts, stds] = await Promise.all([
+        ApiService.getEvents(),
+        ApiService.getStudents()
+      ]);
+      setEvents(evts || []);
+      setStudents(stds || []);
+
+      const active = evts.find(e => e.status === 'ACTIVE') || evts[0];
+      if (active) {
+        setSelectedEventId(prev => {
+          if (prev && evts.some(e => e.event_id === prev)) return prev;
+          return active.event_id;
+        });
+      }
+    } catch (err: any) {
+      console.warn('Gagal memuat events & students analytics:', err);
     }
   };
 
@@ -48,8 +65,12 @@ export const ExecutiveAnalytics: React.FC = () => {
   }, [selectedEventId]);
 
   const loadHalaqahs = async (evtId: string) => {
-    const hList = await ApiService.getHalaqahList(evtId);
-    setHalaqahs(hList);
+    try {
+      const hList = await ApiService.getHalaqahList(evtId);
+      setHalaqahs(hList || []);
+    } catch {
+      // transient
+    }
   };
 
   useEffect(() => {
@@ -58,16 +79,24 @@ export const ExecutiveAnalytics: React.FC = () => {
 
   const loadAnalytics = async () => {
     setLoading(true);
-    const res = await ApiService.getExecutiveAnalytics({
-      academicYearFilter,
-      eventId: selectedEventId,
-      analyticsMode,
-      gradeFilter,
-      genderFilter,
-      halaqahFilter
-    });
-    setData(res);
-    setLoading(false);
+    setLoadError(null);
+    try {
+      const res = await ApiService.getExecutiveAnalytics({
+        academicYearFilter,
+        eventId: selectedEventId,
+        analyticsMode,
+        gradeFilter,
+        genderFilter,
+        halaqahFilter
+      });
+      setData(res);
+      setLoadError(null);
+    } catch (err: any) {
+      console.error('Error loading executive analytics:', err);
+      setLoadError(err.message || 'Gagal memuat data analitik eksekutif dari server.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Derive dynamic filter lists
@@ -224,9 +253,23 @@ export const ExecutiveAnalytics: React.FC = () => {
         </button>
       </div>
 
-      {loading || !data ? (
+      {loading && !data ? (
         <div className="py-16 text-center text-slate-400 text-xs bg-white rounded-xl border border-slate-200">
-          Kalkulasi statistik eksekutif...
+          <RefreshCw className="w-5 h-5 animate-spin mx-auto text-emerald-600 mb-2" />
+          <span>Kalkulasi statistik eksekutif...</span>
+        </div>
+      ) : loadError && !data ? (
+        <div className="py-16 text-center bg-rose-50 border border-rose-200 rounded-2xl p-6 space-y-3">
+          <AlertTriangle className="w-8 h-8 text-rose-500 mx-auto" />
+          <h3 className="text-sm font-bold text-rose-900">Data gagal dimuat</h3>
+          <p className="text-xs text-rose-600 max-w-md mx-auto">{loadError}</p>
+          <button
+            onClick={() => { initData(); loadAnalytics(); }}
+            className="inline-flex items-center space-x-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition shadow-sm"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Coba Lagi</span>
+          </button>
         </div>
       ) : analyticsMode === 'SINGLE' || analyticsMode === 'COHORT' ? (
         /* SINGLE EVENT / COHORT ANALYTICS */

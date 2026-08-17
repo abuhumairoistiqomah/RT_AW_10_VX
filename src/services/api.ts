@@ -140,13 +140,15 @@ function notifyAuthExpired(): void {
   setStoredUser(null);
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('rt_auth_expired', {
-      detail: { message: 'Sesi Anda telah berakhir atau tidak valid. Silakan login kembali.' }
+      detail: { message: 'Sesi login telah berakhir. Silakan masuk kembali.' }
     }));
   }
 }
 
 // Remote API helpers
-async function apiGet<T>(action: string, params: Record<string, string | undefined> = {}, customUrl?: string): Promise<T> {
+let isRevalidatingAuth = false;
+
+async function apiGet<T>(action: string, params: Record<string, string | undefined> = {}, customUrl?: string, retryCount = 0): Promise<T> {
   const targetUrl = (customUrl || resolveApiUrl()).trim();
   if (!targetUrl || targetUrl.includes('YOUR_DEPLOYMENT_ID')) {
     throw new Error('Konfigurasi URL Google Apps Script belum diatur. Silakan atur URL di pengaturan database.');
@@ -176,7 +178,23 @@ async function apiGet<T>(action: string, params: Record<string, string | undefin
 
   const json = await res.json();
   if (!json.success) {
-    if (json.error?.code === 'AUTH_REQUIRED') {
+    const isAuthErr = json.error?.code === 'AUTH_REQUIRED' || 
+                      json.error?.message?.includes('AUTH_REQUIRED') ||
+                      json.error?.message?.includes('Sesi login telah berakhir');
+
+    if (isAuthErr && action !== 'validateSession' && action !== 'login' && retryCount === 0 && getAuthToken()) {
+      if (!isRevalidatingAuth) {
+        isRevalidatingAuth = true;
+        try {
+          const valRes = await ApiService.validateSession();
+          isRevalidatingAuth = false;
+          if (valRes && valRes.valid) {
+            return await apiGet<T>(action, params, customUrl, retryCount + 1);
+          }
+        } catch {
+          isRevalidatingAuth = false;
+        }
+      }
       notifyAuthExpired();
     }
     throw new Error(json.error?.message || 'Gagal mengambil data dari Google Apps Script backend.');
@@ -185,7 +203,7 @@ async function apiGet<T>(action: string, params: Record<string, string | undefin
   return json.data as T;
 }
 
-async function apiPost<T>(action: string, payload: any = {}, customUrl?: string): Promise<T> {
+async function apiPost<T>(action: string, payload: any = {}, customUrl?: string, retryCount = 0): Promise<T> {
   const targetUrl = (customUrl || resolveApiUrl()).trim();
   if (!targetUrl || targetUrl.includes('YOUR_DEPLOYMENT_ID')) {
     throw new Error('Konfigurasi URL Google Apps Script belum diatur. Silakan atur URL di pengaturan database.');
@@ -212,7 +230,23 @@ async function apiPost<T>(action: string, payload: any = {}, customUrl?: string)
 
   const json = await res.json();
   if (!json.success) {
-    if (json.error?.code === 'AUTH_REQUIRED') {
+    const isAuthErr = json.error?.code === 'AUTH_REQUIRED' || 
+                      json.error?.message?.includes('AUTH_REQUIRED') ||
+                      json.error?.message?.includes('Sesi login telah berakhir');
+
+    if (isAuthErr && action !== 'validateSession' && action !== 'login' && retryCount === 0 && token) {
+      if (!isRevalidatingAuth) {
+        isRevalidatingAuth = true;
+        try {
+          const valRes = await ApiService.validateSession();
+          isRevalidatingAuth = false;
+          if (valRes && valRes.valid) {
+            return await apiPost<T>(action, payload, customUrl, retryCount + 1);
+          }
+        } catch {
+          isRevalidatingAuth = false;
+        }
+      }
       notifyAuthExpired();
     }
     throw new Error(json.error?.message || 'Gagal menyimpan data ke Google Apps Script backend.');

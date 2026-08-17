@@ -16,6 +16,7 @@ export const HalaqahManagement: React.FC = () => {
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [sessionGroups, setSessionGroups] = useState<SessionGroup[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState<boolean>(false);
 
   // Modals
@@ -57,6 +58,17 @@ export const HalaqahManagement: React.FC = () => {
     loadEvents();
   }, []);
 
+  // Listen for tab resume event to re-fetch in background safely
+  useEffect(() => {
+    const handleResume = () => {
+      if (selectedEventId) {
+        loadHalaqahData(selectedEventId);
+      }
+    };
+    window.addEventListener('rt_app_resumed', handleResume);
+    return () => window.removeEventListener('rt_app_resumed', handleResume);
+  }, [selectedEventId]);
+
   useEffect(() => {
     if (selectedEventId) {
       loadHalaqahData(selectedEventId);
@@ -64,27 +76,44 @@ export const HalaqahManagement: React.FC = () => {
   }, [selectedEventId]);
 
   const loadEvents = async () => {
-    const evts = await ApiService.getEvents();
-    setEvents(evts);
-    const active = evts.find(e => e.status === 'ACTIVE') || evts[0];
-    if (active) setSelectedEventId(active.event_id);
+    try {
+      const evts = await ApiService.getEvents();
+      if (Array.isArray(evts) && evts.length > 0) {
+        setEvents(evts);
+        setSelectedEventId(prev => {
+          if (prev && evts.some(e => e.event_id === prev)) return prev;
+          const active = evts.find(e => e.status === 'ACTIVE') || evts[0];
+          return active ? active.event_id : prev;
+        });
+      }
+    } catch (err: any) {
+      console.warn('Gagal memuat events:', err);
+    }
   };
 
   const loadHalaqahData = async (eventId: string) => {
+    if (!eventId) return;
     setLoading(true);
-    const [hList, pList, htList, sgList, tList] = await Promise.all([
-      ApiService.getHalaqahList(eventId),
-      ApiService.getEventParticipants(eventId),
-      ApiService.getHalaqahTeachers(eventId),
-      ApiService.getSessionGroups(eventId),
-      ApiService.getTeachers()
-    ]);
-    setHalaqahs(hList);
-    setParticipants(pList);
-    setHalaqahTeachers(htList);
-    setSessionGroups(sgList);
-    setTeachers(tList);
-    setLoading(false);
+    try {
+      const [hList, pList, htList, sgList, tList] = await Promise.all([
+        ApiService.getHalaqahList(eventId),
+        ApiService.getEventParticipants(eventId),
+        ApiService.getHalaqahTeachers(eventId),
+        ApiService.getSessionGroups(eventId),
+        ApiService.getTeachers()
+      ]);
+      setHalaqahs(hList || []);
+      setParticipants(pList || []);
+      setHalaqahTeachers(htList || []);
+      setSessionGroups(sgList || []);
+      setTeachers(tList || []);
+      setLoadError(null);
+    } catch (err: any) {
+      console.error('Error loading halaqah data:', err);
+      setLoadError(err.message || 'Gagal memuat data halaqah dari server.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleOpenAdd = () => {
@@ -186,6 +215,23 @@ export const HalaqahManagement: React.FC = () => {
         </div>
       </div>
 
+      {/* Error Alert Banner when data exists but revalidation failed */}
+      {loadError && halaqahs.length > 0 && (
+        <div className="p-4 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl flex items-center justify-between text-xs font-medium shadow-xs">
+          <div className="flex items-center space-x-2">
+            <span className="font-bold">⚠ Gagal sinkronisasi data:</span>
+            <span>{loadError}. Menampilkan data cache lokal.</span>
+          </div>
+          <button
+            onClick={() => loadHalaqahData(selectedEventId)}
+            className="flex items-center space-x-1 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold transition shrink-0 ml-2"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Coba Lagi</span>
+          </button>
+        </div>
+      )}
+
       {/* Event Selector Bar */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
         <div className="flex items-center space-x-3">
@@ -204,16 +250,43 @@ export const HalaqahManagement: React.FC = () => {
           </select>
         </div>
 
-        <div className="text-xs text-slate-500">
-          Total Halaqah: <strong className="text-slate-900 font-bold">{halaqahs.length}</strong>
+        <div className="flex items-center space-x-3 text-xs text-slate-500">
+          <button
+            onClick={() => { loadEvents(); loadHalaqahData(selectedEventId); }}
+            className="flex items-center space-x-1 text-emerald-600 hover:text-emerald-700 font-bold"
+            title="Refresh data halaqah"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Refresh</span>
+          </button>
+          <span>•</span>
+          <div>
+            Total Halaqah: <strong className="text-slate-900 font-bold">{loading && halaqahs.length === 0 ? '...' : halaqahs.length}</strong>
+          </div>
         </div>
       </div>
 
       {/* Halaqah Grid Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {loading ? (
+        {loading && halaqahs.length === 0 ? (
           <div className="col-span-full py-12 text-center text-slate-400 text-xs">
-            Memuat data halaqah...
+            <RefreshCw className="w-5 h-5 animate-spin mx-auto text-emerald-600 mb-2" />
+            <span>Memuat data halaqah...</span>
+          </div>
+        ) : loadError && halaqahs.length === 0 ? (
+          <div className="col-span-full py-12 text-center bg-rose-50 border border-rose-200 rounded-2xl p-6 space-y-3">
+            <div className="w-10 h-10 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto">
+              <XCircle className="w-6 h-6" />
+            </div>
+            <h3 className="text-sm font-bold text-rose-900">Data gagal dimuat</h3>
+            <p className="text-xs text-rose-600 max-w-md mx-auto">{loadError}</p>
+            <button
+              onClick={() => { loadEvents(); loadHalaqahData(selectedEventId); }}
+              className="inline-flex items-center space-x-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition shadow-sm"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Coba Lagi</span>
+            </button>
           </div>
         ) : halaqahs.length === 0 ? (
           <div className="col-span-full py-12 text-center text-slate-400 text-xs bg-white rounded-xl border border-slate-200">

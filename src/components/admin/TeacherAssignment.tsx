@@ -12,6 +12,7 @@ export const TeacherAssignment: React.FC = () => {
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [assignments, setAssignments] = useState<HalaqahTeacher[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState<boolean>(false);
 
   // Status Alerts
@@ -32,6 +33,17 @@ export const TeacherAssignment: React.FC = () => {
     loadEvents();
   }, []);
 
+  // Listen for tab resume event
+  useEffect(() => {
+    const handleResume = () => {
+      if (selectedEventId) {
+        loadData(selectedEventId);
+      }
+    };
+    window.addEventListener('rt_app_resumed', handleResume);
+    return () => window.removeEventListener('rt_app_resumed', handleResume);
+  }, [selectedEventId]);
+
   useEffect(() => {
     if (selectedEventId) {
       setSuccessMsg('');
@@ -43,27 +55,36 @@ export const TeacherAssignment: React.FC = () => {
   const loadEvents = async () => {
     try {
       const evts = await ApiService.getEvents();
-      setEvents(evts);
-      const active = evts.find(e => e.status === 'ACTIVE') || evts[0];
-      if (active) setSelectedEventId(active.event_id);
+      if (Array.isArray(evts) && evts.length > 0) {
+        setEvents(evts);
+        setSelectedEventId(prev => {
+          if (prev && evts.some(e => e.event_id === prev)) return prev;
+          const active = evts.find(e => e.status === 'ACTIVE') || evts[0];
+          return active ? active.event_id : prev;
+        });
+      }
     } catch (err: any) {
-      setErrorMsg('Gagal memuat daftar event: ' + (err.message || ''));
+      console.warn('Gagal memuat daftar event:', err);
     }
   };
 
   const loadData = async (eventId: string) => {
+    if (!eventId) return;
     setLoading(true);
+    setLoadError(null);
     try {
       const [hList, tList, htList] = await Promise.all([
         ApiService.getHalaqahList(eventId),
         ApiService.getTeachers(),
         ApiService.getHalaqahTeachers(eventId)
       ]);
-      setHalaqahs(hList);
-      setTeachers(tList);
-      setAssignments(htList);
+      setHalaqahs(hList || []);
+      setTeachers(tList || []);
+      setAssignments(htList || []);
+      setLoadError(null);
     } catch (err: any) {
-      setErrorMsg('Gagal memuat data penugasan guru: ' + (err.message || ''));
+      console.error('Error loading teacher assignments:', err);
+      setLoadError(err.message || 'Gagal memuat data penugasan guru dari server.');
     } finally {
       setLoading(false);
     }
@@ -218,14 +239,46 @@ export const TeacherAssignment: React.FC = () => {
         </button>
       </div>
 
+      {/* Error Alert Banner when data exists but revalidation failed */}
+      {loadError && halaqahs.length > 0 && (
+        <div className="p-4 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl flex items-center justify-between text-xs font-medium shadow-xs">
+          <div className="flex items-center space-x-2">
+            <span className="font-bold">⚠ Gagal sinkronisasi data:</span>
+            <span>{loadError}. Menampilkan data lokal.</span>
+          </div>
+          <button
+            onClick={() => loadData(selectedEventId)}
+            className="flex items-center space-x-1 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold transition shrink-0 ml-2"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Coba Lagi</span>
+          </button>
+        </div>
+      )}
+
       {/* Halaqah List & Assignments */}
       <div className="space-y-4">
-        {loading ? (
+        {loading && halaqahs.length === 0 ? (
           <div className="py-12 text-center text-slate-400 text-xs bg-white rounded-xl border border-slate-200">
             <div className="flex items-center justify-center gap-2">
               <RefreshCw className="w-4 h-4 animate-spin text-slate-500" />
               <span>Memuat data penugasan guru...</span>
             </div>
+          </div>
+        ) : loadError && halaqahs.length === 0 ? (
+          <div className="py-12 text-center bg-rose-50 border border-rose-200 rounded-2xl p-6 space-y-3">
+            <div className="w-10 h-10 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto">
+              <AlertCircle className="w-6 h-6" />
+            </div>
+            <h3 className="text-sm font-bold text-rose-900">Data gagal dimuat</h3>
+            <p className="text-xs text-rose-600 max-w-md mx-auto">{loadError}</p>
+            <button
+              onClick={() => { loadEvents(); loadData(selectedEventId); }}
+              className="inline-flex items-center space-x-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition shadow-sm"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Coba Lagi</span>
+            </button>
           </div>
         ) : halaqahs.length === 0 ? (
           <div className="py-12 text-center text-slate-400 text-xs bg-white rounded-xl border border-slate-200">

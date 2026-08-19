@@ -94,7 +94,7 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
       if (!a.is_deleted && a.session_config_id === selectedSessionId) {
         const hasQuran = a.surah_start != null && a.surah_start !== ('' as any) && a.lines_added != null && a.lines_added !== ('' as any);
         const hasNuroniyyah = (a.assessment_mode === 'NURONIYYAH' || a.nuroniyyah_dars != null) && a.lines_added != null && a.lines_added !== ('' as any);
-        const hasIqra = (a.assessment_mode === 'IQRA' || a.iqra_level != null) && a.iqra_level != null && a.iqra_level !== ('' as any) && a.iqra_page_start != null && a.iqra_page_start !== ('' as any) && a.iqra_page_end != null && a.iqra_page_end !== ('' as any);
+        const hasIqra = a.iqra_level != null && a.iqra_level !== ('' as any) && a.iqra_page_start != null && a.iqra_page_start !== ('' as any);
         map.set(a.student_id, {
           attendance_status: a.attendance_status,
           assessment_status: a.assessment_status,

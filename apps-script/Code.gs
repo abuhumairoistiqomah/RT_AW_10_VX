@@ -6,8 +6,8 @@
  * - ADMIN/COORDINATOR may preview teacher workspace only when teacherId is explicitly supplied.
  * - TEACHER is always restricted to assigned halaqah.
  * - COORDINATOR is read-only.
- * - Ziyadah, Nuroniyyah, and Iqro' are first-class assessment modes.
- * - Ziyadah/Nuroniyyah progress is counted in lines; Iqro' progress is counted in pages.
+ * - Nuroniyyah is a first-class assessment mode. IQRA remains legacy-compatible only.
+ * - Ziyadah and Nuroniyyah progress are calculated separately.
  * - Spreadsheet writes are header-based.
  * - Session storage is spreadsheet-authoritative.
  *
@@ -919,13 +919,15 @@ function normalizeAssessmentModeGS(assessment) {
   var rawMode = upperGS(assessment.assessment_mode);
   if (rawMode === ASSESSMENT_MODES.ZIYADAH) return ASSESSMENT_MODES.ZIYADAH;
   if (rawMode === ASSESSMENT_MODES.NURONIYYAH) return ASSESSMENT_MODES.NURONIYYAH;
-  if (rawMode === ASSESSMENT_MODES.IQRA) return ASSESSMENT_MODES.IQRA;
+  if (rawMode === ASSESSMENT_MODES.IQRA) return ASSESSMENT_MODES.NURONIYYAH;
   if (hasValueGS(assessment.nuroniyyah_dars)) return ASSESSMENT_MODES.NURONIYYAH;
-  if (hasValueGS(assessment.iqra_level) || hasValueGS(assessment.iqra_page_start) || hasValueGS(assessment.iqra_page_end) || hasValueGS(assessment.iqra_pages_added)) return ASSESSMENT_MODES.IQRA;
+  if (hasValueGS(assessment.iqra_level) || hasValueGS(assessment.iqra_page_start) || hasValueGS(assessment.iqra_page_end)) return ASSESSMENT_MODES.NURONIYYAH;
   return ASSESSMENT_MODES.ZIYADAH;
 }
 
 function getRawAssessmentModeGS(assessment) {
+  var raw = upperGS(assessment && assessment.assessment_mode);
+  if (raw === ASSESSMENT_MODES.IQRA) return ASSESSMENT_MODES.IQRA;
   return normalizeAssessmentModeGS(assessment);
 }
 
@@ -946,65 +948,33 @@ function clearNuroniyyahProgressFieldsGS(assessment) {
   assessment.nuroniyyah_dars = '';
 }
 
-function clearIqraProgressFieldsGS(assessment) {
+function clearLegacyIqraFieldsGS(assessment) {
   assessment.iqra_level = '';
   assessment.iqra_page_start = '';
   assessment.iqra_page_end = '';
-  assessment.iqra_pages_added = '';
 }
 
 function clearAllProgressFieldsGS(assessment) {
   clearQuranProgressFieldsGS(assessment);
   clearNuroniyyahProgressFieldsGS(assessment);
-  clearIqraProgressFieldsGS(assessment);
+  clearLegacyIqraFieldsGS(assessment);
   assessment.lines_added = '';
-}
-
-function getIqraPagesAddedGS(assessment) {
-  assessment = assessment || {};
-  if (hasValueGS(assessment.iqra_pages_added)) {
-    var explicit = Number(assessment.iqra_pages_added);
-    if (isFinite(explicit) && !isNaN(explicit) && explicit >= 0) return explicit;
-  }
-
-  var start = Number(assessment.iqra_page_start);
-  var end = Number(assessment.iqra_page_end);
-  if (isFinite(start) && !isNaN(start) && isFinite(end) && !isNaN(end) && start > 0 && end >= start) {
-    return end - start + 1;
-  }
-  return 0;
 }
 
 function hasCompletedPresentProgressGS(assessment) {
   if (upperGS(assessment.attendance_status) !== 'PRESENT') return false;
+  var rawMode = getRawAssessmentModeGS(assessment);
+  if (rawMode === ASSESSMENT_MODES.IQRA) return hasValueGS(assessment.iqra_level) && hasValueGS(assessment.iqra_page_start);
   var mode = normalizeAssessmentModeGS(assessment);
-  if (mode === ASSESSMENT_MODES.IQRA) {
-    return hasValueGS(assessment.iqra_level) && hasValueGS(assessment.iqra_page_start) && hasValueGS(assessment.iqra_page_end);
-  }
   if (mode === ASSESSMENT_MODES.NURONIYYAH) return hasValueGS(assessment.nuroniyyah_dars) && hasValueGS(assessment.lines_added);
   return hasValueGS(assessment.surah_start) && hasValueGS(assessment.ayah_start) && hasValueGS(assessment.surah_end) && hasValueGS(assessment.ayah_end) && hasValueGS(assessment.lines_added);
 }
 
 function summarizeAssessmentsByModeGS(assessments) {
-  var result = {
-    ziyadahLines: 0,
-    nuroniyyahLines: 0,
-    iqraPages: 0,
-    ziyadahPresentCount: 0,
-    nuroniyyahPresentCount: 0,
-    iqraPresentCount: 0
-  };
-
+  var result = { ziyadahLines: 0, nuroniyyahLines: 0, ziyadahPresentCount: 0, nuroniyyahPresentCount: 0 };
   (assessments || []).forEach(function(a) {
     if (upperGS(a.attendance_status) !== 'PRESENT') return;
     var mode = normalizeAssessmentModeGS(a);
-
-    if (mode === ASSESSMENT_MODES.IQRA) {
-      result.iqraPages += getIqraPagesAddedGS(a);
-      result.iqraPresentCount++;
-      return;
-    }
-
     var lines = Number(a.lines_added);
     if (!isFinite(lines) || isNaN(lines)) lines = 0;
     if (mode === ASSESSMENT_MODES.NURONIYYAH) {
@@ -1018,12 +988,12 @@ function summarizeAssessmentsByModeGS(assessments) {
   return result;
 }
 
-function buildIqraLabelGS(assessment) {
+function buildLegacyIqraLabelGS(assessment) {
   if (!assessment) return '';
   var level = cleanStringGS(assessment.iqra_level);
   var start = cleanStringGS(assessment.iqra_page_start);
   var end = cleanStringGS(assessment.iqra_page_end);
-  var text = level ? "Iqro' Jilid " + level : "Iqro'";
+  var text = level ? 'Iqra Jilid ' + level : 'Iqra';
   if (start && end) text += ' Hal. ' + start + '–' + end;
   else if (start) text += ' Hal. ' + start;
   return text;
@@ -1079,7 +1049,7 @@ function handleHealth() {
     return jsonResponse({
       status: 'ok',
       spreadsheetConnected: Boolean(ss),
-      backendVersion: 'RT-GS-ROLE-FIRST-3MODE-2026-08-19'
+      backendVersion: 'RT-GS-ROLE-FIRST-NURONIYYAH-2026-08-18'
     });
   } catch (e) {
     return jsonError('SERVER_ERROR', 'Gagal terhubung ke Google Spreadsheet: ' + e.message);
@@ -2080,7 +2050,6 @@ function buildTeacherWorkspaceDataGS(session, payload) {
       totalLinesAdded: progress.ziyadahLines + progress.nuroniyyahLines,
       totalZiyadahLinesAdded: progress.ziyadahLines,
       totalNuroniyyahLinesAdded: progress.nuroniyyahLines,
-      totalIqraPagesAdded: progress.iqraPages,
       completionStatus: evaluation ? evaluation.completion_status : 'NOT_EVALUATED',
       session_group_id: p.session_group_id || selectedHalaqah.session_group_id || ''
     };
@@ -2245,34 +2214,15 @@ function handleSaveSessionAssessment(payload, authToken) {
       assessment.nuroniyyah_dars = cleanStringGS(assessment.nuroniyyah_dars);
       assessment.lines_added = nuroniyyahLines;
       clearQuranProgressFieldsGS(assessment);
-      clearIqraProgressFieldsGS(assessment);
+      clearLegacyIqraFieldsGS(assessment);
       assessment.assessment_status = 'COMPLETED';
     } else if (requestedRawMode === ASSESSMENT_MODES.IQRA) {
-      if (!hasValueGS(assessment.iqra_level) || !hasValueGS(assessment.iqra_page_start) || !hasValueGS(assessment.iqra_page_end)) {
-        return jsonError('VALIDATION_ERROR', "Pada mode Iqro', Jilid serta halaman awal & akhir wajib diisi.");
-      }
-
-      var iqraLevel = Number(assessment.iqra_level);
-      var iqraPageStart = Number(assessment.iqra_page_start);
-      var iqraPageEnd = Number(assessment.iqra_page_end);
-      if (!isFinite(iqraLevel) || isNaN(iqraLevel) || iqraLevel < 1 || iqraLevel > 6) {
-        return jsonError('VALIDATION_ERROR', "Jilid Iqro' harus angka 1 sampai 6.");
-      }
-      if (!isFinite(iqraPageStart) || isNaN(iqraPageStart) || iqraPageStart < 1 || !isFinite(iqraPageEnd) || isNaN(iqraPageEnd) || iqraPageEnd < iqraPageStart) {
-        return jsonError('VALIDATION_ERROR', "Rentang halaman Iqro' tidak valid. Halaman akhir harus sama atau lebih besar dari halaman awal.");
+      if (!hasValueGS(assessment.iqra_level) || !hasValueGS(assessment.iqra_page_start)) {
+        return jsonError('VALIDATION_ERROR', 'Data Iqra legacy belum lengkap.');
       }
 
       assessment.assessment_mode = ASSESSMENT_MODES.IQRA;
-      assessment.iqra_level = iqraLevel;
-      assessment.iqra_page_start = iqraPageStart;
-      assessment.iqra_page_end = iqraPageEnd;
-      assessment.iqra_pages_added = hasValueGS(assessment.iqra_pages_added)
-        ? Number(assessment.iqra_pages_added)
-        : (iqraPageEnd - iqraPageStart + 1);
-      if (!isFinite(assessment.iqra_pages_added) || isNaN(assessment.iqra_pages_added) || assessment.iqra_pages_added < 0) {
-        assessment.iqra_pages_added = iqraPageEnd - iqraPageStart + 1;
-      }
-      assessment.lines_added = '';
+      assessment.lines_added = hasValueGS(assessment.lines_added) ? Number(assessment.lines_added) : 0;
       clearQuranProgressFieldsGS(assessment);
       clearNuroniyyahProgressFieldsGS(assessment);
       assessment.assessment_status = 'COMPLETED';
@@ -2292,7 +2242,7 @@ function handleSaveSessionAssessment(payload, authToken) {
 
       assessment.assessment_mode = ASSESSMENT_MODES.ZIYADAH;
       clearNuroniyyahProgressFieldsGS(assessment);
-      clearIqraProgressFieldsGS(assessment);
+      clearLegacyIqraFieldsGS(assessment);
       assessment.assessment_status = 'COMPLETED';
     }
   } else if (attendance === 'UNASSESSED') {
@@ -3001,7 +2951,6 @@ function handleGetExecutiveAnalytics(params, authToken) {
 
     var ziyadahTotals = [];
     var nuroniyyahTotals = [];
-    var iqraTotals = [];
     var noAnyProgressCount = 0;
 
     participants.forEach(function(p) {
@@ -3009,13 +2958,11 @@ function handleGetExecutiveAnalytics(params, authToken) {
       var summary = summarizeAssessmentsByModeGS(assessmentsByStudent[sid] || []);
       if (summary.ziyadahPresentCount > 0) ziyadahTotals.push(summary.ziyadahLines);
       if (summary.nuroniyyahPresentCount > 0) nuroniyyahTotals.push(summary.nuroniyyahLines);
-      if (summary.iqraPresentCount > 0) iqraTotals.push(summary.iqraPages);
-      if (summary.ziyadahPresentCount === 0 && summary.nuroniyyahPresentCount === 0 && summary.iqraPresentCount === 0) noAnyProgressCount++;
+      if (summary.ziyadahPresentCount === 0 && summary.nuroniyyahPresentCount === 0) noAnyProgressCount++;
     });
 
     var ziyadahStats = calculateStatsGS(ziyadahTotals);
     var nuroniyyahStats = calculateStatsGS(nuroniyyahTotals);
-    var iqraStats = calculateStatsGS(iqraTotals);
     var skillEndMap = {};
     var completionMap = {};
 
@@ -3052,7 +2999,6 @@ function handleGetExecutiveAnalytics(params, authToken) {
 
     ziyadahStats.completionRate = completionRateAmongEvaluated;
     nuroniyyahStats.completionRate = completionRateAmongEvaluated;
-    iqraStats.completionRate = completionRateAmongEvaluated;
     var transitionResult = calculateSkillTransitionsGS(participants, skillEndMap);
 
     return {
@@ -3071,10 +3017,6 @@ function handleGetExecutiveAnalytics(params, authToken) {
       nuroniyyahMissingCount: participants.length - nuroniyyahTotals.length,
       nuroniyyahStats: nuroniyyahStats,
       nuroniyyahDistributionBuckets: getDistributionBucketsGS(nuroniyyahTotals),
-
-      iqraProgressCount: iqraTotals.length,
-      iqraMissingCount: participants.length - iqraTotals.length,
-      iqraStats: iqraStats,
 
       noAnyProgressCount: noAnyProgressCount,
       evaluatedCount: evaluatedCount,
@@ -3117,8 +3059,6 @@ function handleGetExecutiveAnalytics(params, authToken) {
         ziyadahStats: metrics.ziyadahStats,
         nuroniyyahProgressCount: metrics.nuroniyyahProgressCount,
         nuroniyyahStats: metrics.nuroniyyahStats,
-        iqraProgressCount: metrics.iqraProgressCount,
-        iqraStats: metrics.iqraStats,
         evaluatedCount: metrics.evaluatedCount,
         completedCount: metrics.completedCount,
         incompleteCount: metrics.incompleteCount,
@@ -3154,8 +3094,6 @@ function handleGetExecutiveAnalytics(params, authToken) {
       ziyadahStats: calculateStatsGS([]),
       nuroniyyahProgressCount: 0,
       nuroniyyahStats: calculateStatsGS([]),
-      iqraProgressCount: 0,
-      iqraStats: calculateStatsGS([]),
       evaluatedCount: 0,
       notEvaluatedCount: 0,
       evaluationCoverage: 0,
@@ -3232,35 +3170,24 @@ function handlePublicStudentProgress(payload) {
     var attendance = upperGS(a.attendance_status);
     var present = attendance === 'PRESENT';
     var mode = normalizeAssessmentModeGS(a);
+    var rawMode = getRawAssessmentModeGS(a);
 
     var item = {
       sessionNo: Number(a.session_no) || 0,
       attendance: attendance,
       mode: present ? mode : null,
-      assessment_mode: present ? mode : null,
       surahName: null,
       ayahRange: null,
       nuroniyyahDars: null,
-      iqraLevel: null,
-      iqraPageStart: null,
-      iqraPageEnd: null,
-      iqraPagesAdded: null,
-      linesAdded: null
+      linesAdded: present ? Number(a.lines_added) || 0 : null
     };
 
     if (!present) return item;
 
     if (mode === ASSESSMENT_MODES.NURONIYYAH) {
-      item.nuroniyyahDars = cleanStringGS(a.nuroniyyah_dars) || null;
-      item.linesAdded = hasValueGS(a.lines_added) ? Number(a.lines_added) : 0;
-      return item;
-    }
-
-    if (mode === ASSESSMENT_MODES.IQRA) {
-      item.iqraLevel = hasValueGS(a.iqra_level) ? Number(a.iqra_level) : null;
-      item.iqraPageStart = hasValueGS(a.iqra_page_start) ? Number(a.iqra_page_start) : null;
-      item.iqraPageEnd = hasValueGS(a.iqra_page_end) ? Number(a.iqra_page_end) : null;
-      item.iqraPagesAdded = getIqraPagesAddedGS(a);
+      item.nuroniyyahDars = rawMode === ASSESSMENT_MODES.IQRA
+        ? buildLegacyIqraLabelGS(a)
+        : cleanStringGS(a.nuroniyyah_dars) || null;
       return item;
     }
 
@@ -3268,7 +3195,6 @@ function handlePublicStudentProgress(payload) {
     item.ayahRange = hasValueGS(a.ayah_start) && hasValueGS(a.ayah_end)
       ? a.ayah_start + '–' + a.ayah_end
       : null;
-    item.linesAdded = hasValueGS(a.lines_added) ? Number(a.lines_added) : 0;
     return item;
   });
 
@@ -3296,10 +3222,9 @@ function handlePublicStudentProgress(payload) {
     baselineText: baselineText,
     targetText: targetText,
     targetLines: toNumberOrUndefinedGS(participant.target_lines) || null,
-    totalLinesAdded: progress.ziyadahLines + progress.nuroniyyahLines,
+    totalLinesAdded: progress.ziyadahLines,
     totalZiyadahLinesAdded: progress.ziyadahLines,
     totalNuroniyyahLinesAdded: progress.nuroniyyahLines,
-    totalIqraPagesAdded: progress.iqraPages,
     completionStatus: evaluation ? evaluation.completion_status : 'NOT_EVALUATED',
     sessions: sessionsList
   });
@@ -3422,7 +3347,7 @@ function backendSelfCheckGS() {
   var recommended = {
     '10_HALAQAH': ['target_ziyadah_lines', 'target_nuroniyyah_lines'],
     '12_EVENT_PARTICIPANTS': ['target_nuroniyyah_lines', 'target_iqra_pages', 'assignment_note'],
-    '13_SESSION_ASSESSMENTS': ['iqra_level', 'iqra_page_start', 'iqra_page_end', 'iqra_pages_added']
+    '13_SESSION_ASSESSMENTS': ['iqra_level', 'iqra_page_start', 'iqra_page_end']
   };
 
   var report = {

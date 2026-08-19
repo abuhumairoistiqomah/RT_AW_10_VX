@@ -106,7 +106,6 @@ export const StudentSessionHistoryModal: React.FC<StudentSessionHistoryModalProp
     let unassessedCount = 0;
     let totalHafalanLines = 0;
     let totalNuroniyyahLines = 0;
-    let totalIqraPages = 0;
 
     sessionRows.forEach(({ assessment }) => {
       if (!assessment || !assessment.attendance_status) {
@@ -121,20 +120,10 @@ export const StudentSessionHistoryModal: React.FC<StudentSessionHistoryModalProp
             ? Number(assessment.lines_added)
             : 0;
 
-          const isIqra = assessment.assessment_mode === 'IQRA' ||
-            Boolean(assessment.iqra_level != null && !assessment.nuroniyyah_dars && !assessment.surah_start && !assessment.surah_end);
           const isNuroniyyah = assessment.assessment_mode === 'NURONIYYAH' ||
             Boolean(assessment.nuroniyyah_dars && !assessment.surah_start && !assessment.surah_end);
 
-          if (isIqra) {
-            const explicitPages = Number(assessment.iqra_pages_added);
-            const pageStart = Number(assessment.iqra_page_start);
-            const pageEnd = Number(assessment.iqra_page_end);
-            const derivedPages = Number.isFinite(pageStart) && Number.isFinite(pageEnd) && pageStart > 0 && pageEnd >= pageStart
-              ? pageEnd - pageStart + 1
-              : 0;
-            totalIqraPages += Number.isFinite(explicitPages) && explicitPages >= 0 ? explicitPages : derivedPages;
-          } else if (isNuroniyyah) {
+          if (isNuroniyyah) {
             totalNuroniyyahLines += lines;
           } else {
             // Default is ZIYADAH / Hafalan Al-Qur'an
@@ -164,8 +153,7 @@ export const StudentSessionHistoryModal: React.FC<StudentSessionHistoryModalProp
       absentCount,
       unassessedCount,
       totalHafalanLines,
-      totalNuroniyyahLines,
-      totalIqraPages
+      totalNuroniyyahLines
     };
   }, [sessionRows]);
 
@@ -189,7 +177,7 @@ export const StudentSessionHistoryModal: React.FC<StudentSessionHistoryModalProp
       case 'NON_BBL':
         return (
           <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
-            NON-BBL
+            NON-BBL (Nuroniyyah)
           </span>
         );
       case 'BBLS':
@@ -254,44 +242,10 @@ export const StudentSessionHistoryModal: React.FC<StudentSessionHistoryModalProp
     }
   };
 
-  // Format progress detail by assessment_mode. Skill status never decides the activity type.
+  // Format Qur'an / Nuroniyyah assessment progress detail
   const renderProgressDetail = (asm: SessionAssessment) => {
-    const isIqra = asm.assessment_mode === 'IQRA' ||
-      Boolean(asm.iqra_level != null && !asm.nuroniyyah_dars && !asm.surah_start && !asm.surah_end);
     const isNuroniyyah = asm.assessment_mode === 'NURONIYYAH' ||
       Boolean(asm.nuroniyyah_dars && !asm.surah_start && !asm.surah_end);
-
-    if (isIqra) {
-      const level = asm.iqra_level != null && !isNaN(Number(asm.iqra_level)) ? Number(asm.iqra_level) : null;
-      const pageStart = asm.iqra_page_start != null && !isNaN(Number(asm.iqra_page_start)) ? Number(asm.iqra_page_start) : null;
-      const pageEnd = asm.iqra_page_end != null && !isNaN(Number(asm.iqra_page_end)) ? Number(asm.iqra_page_end) : null;
-      const explicitPages = asm.iqra_pages_added != null && !isNaN(Number(asm.iqra_pages_added)) ? Number(asm.iqra_pages_added) : null;
-      const derivedPages = pageStart != null && pageEnd != null && pageEnd >= pageStart ? pageEnd - pageStart + 1 : null;
-      const pagesAdded = explicitPages != null && explicitPages >= 0 ? explicitPages : derivedPages;
-
-      return (
-        <div className="space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="px-2 py-0.5 bg-violet-50 text-violet-700 border border-violet-200 text-[11px] font-bold rounded">
-              Iqro&apos;
-            </span>
-            <span className="font-bold text-slate-800 text-xs sm:text-sm">
-              {level != null ? `Jilid ${level}` : 'Jilid belum diisi'}
-              {pageStart != null ? ` • Halaman ${pageStart}${pageEnd != null && pageEnd !== pageStart ? `–${pageEnd}` : ''}` : ''}
-            </span>
-          </div>
-          {pagesAdded != null ? (
-            <div className="text-xs font-bold text-violet-600">
-              +{pagesAdded} Halaman
-            </div>
-          ) : (
-            <div className="text-[11px] text-slate-400 italic">
-              Rentang halaman belum lengkap
-            </div>
-          )}
-        </div>
-      );
-    }
 
     if (isNuroniyyah) {
       const darsText = asm.nuroniyyah_dars ? asm.nuroniyyah_dars.trim() : null;
@@ -498,7 +452,7 @@ export const StudentSessionHistoryModal: React.FC<StudentSessionHistoryModalProp
             </div>
 
             {/* Line Progress Totals (Strictly partitioned by mode) */}
-            <div className="pt-2 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+            <div className="pt-2 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
               <div className="flex items-center justify-between bg-emerald-50/50 px-3 py-2 rounded-lg border border-emerald-100">
                 <span className="font-semibold text-emerald-900">Total Baris Hafalan Al-Qur'an:</span>
                 <strong className="text-emerald-700 font-bold text-sm">
@@ -510,13 +464,6 @@ export const StudentSessionHistoryModal: React.FC<StudentSessionHistoryModalProp
                 <span className="font-semibold text-indigo-900">Total Baris Nuroniyyah:</span>
                 <strong className="text-indigo-700 font-bold text-sm">
                   +{summaryMetrics.totalNuroniyyahLines} Baris
-                </strong>
-              </div>
-
-              <div className="flex items-center justify-between bg-violet-50/50 px-3 py-2 rounded-lg border border-violet-100">
-                <span className="font-semibold text-violet-900">Total Halaman Iqro&apos;:</span>
-                <strong className="text-violet-700 font-bold text-sm">
-                  +{summaryMetrics.totalIqraPages} Halaman
                 </strong>
               </div>
             </div>
@@ -536,7 +483,7 @@ export const StudentSessionHistoryModal: React.FC<StudentSessionHistoryModalProp
                 <Calendar className="w-8 h-8 mx-auto text-slate-400" />
                 <p className="text-xs font-bold">Tidak ada sesi aktif yang ditemukan.</p>
                 <p className="text-[11px] text-slate-400">
-                  Belum ada konfigurasi sesi aktif untuk kelompok jadwal siswa ini.
+                  Belum ada konfigurasi sesi aktif untuk kelompok jadwal santri ini.
                 </p>
               </div>
             ) : (
@@ -698,7 +645,7 @@ export const StudentSessionHistoryModal: React.FC<StudentSessionHistoryModalProp
                         ) : (
                           <div className="flex items-center justify-between bg-white p-2.5 rounded-lg border border-purple-100 text-xs">
                             <span className="text-slate-500 italic">
-                              Form evaluasi akhir belum diisi untuk siswa ini.
+                              Form evaluasi akhir belum diisi untuk santri ini.
                             </span>
                             {onNavigateToEvaluation && (
                               <button

@@ -1620,7 +1620,7 @@ export const EventManagement: React.FC<EventManagementProps> = ({ currentUser })
                 </select>
                 <p className="text-[10px] text-slate-500 mt-1">
                   {sessionForm.session_type === 'FINAL_EVALUATION'
-                    ? 'Sesi ini diarahkan khusus untuk evaluasi akhir siswa.'
+                    ? 'Sesi ini diarahkan khusus untuk evaluasi akhir santri / siswa.'
                     : 'Sesi pembelajaran dan setoran hafalan Ziyadah/Nuroniyyah harian.'}
                 </p>
               </div>

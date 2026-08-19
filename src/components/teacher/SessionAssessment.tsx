@@ -72,11 +72,6 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
   const [iqraLevel, setIqraLevel] = useState<number | undefined>(undefined);
   const [iqraPageStart, setIqraPageStart] = useState<string>('');
   const [iqraPageEnd, setIqraPageEnd] = useState<string>('');
-  const iqraPagesAdded = useMemo(() => {
-    const start = Number(iqraPageStart);
-    const end = Number(iqraPageEnd);
-    return Number.isFinite(start) && Number.isFinite(end) && start > 0 && end >= start ? end - start + 1 : 0;
-  }, [iqraPageStart, iqraPageEnd]);
   const [notes, setNotes] = useState<string>('');
 
   // Edit Mode Tracker
@@ -193,33 +188,20 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
     return `draft/${userId}/${eventId}/${studentId}/${sessionCfgId}`;
   }, [currentUser, workspace?.event?.event_id, selectedStudentId, selectedSessionConfigId]);
 
-  // Mode change handler: each mode owns its own progress fields.
-  const handleModeChange = (newMode: 'ZIYADAH' | 'NURONIYYAH' | 'IQRA') => {
+  // Mode change handler: clears fields of other mode
+  const handleModeChange = (newMode: 'ZIYADAH' | 'NURONIYYAH') => {
     if (newMode === assessmentMode) return;
     setAssessmentMode(newMode);
-
-    if (newMode === 'ZIYADAH') {
-      setNuroniyyahDars('');
-      setIqraLevel(undefined);
-      setIqraPageStart('');
-      setIqraPageEnd('');
-      setLinesAdded('');
-      return;
-    }
-
-    setStartSurah(undefined);
-    setStartAyah('');
-    setEndSurah(undefined);
-    setEndAyah('');
-
     if (newMode === 'NURONIYYAH') {
-      setIqraLevel(undefined);
-      setIqraPageStart('');
-      setIqraPageEnd('');
-      setLinesAdded('');
+      setStartSurah(undefined);
+      setStartAyah('');
+      setEndSurah(undefined);
+      setEndAyah('');
     } else {
       setNuroniyyahDars('');
-      setLinesAdded('');
+      setIqraLevel(undefined);
+      setIqraPageStart('');
+      setIqraPageEnd('');
     }
   };
 
@@ -242,27 +224,18 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
       setExistingAssessmentId(existing.assessment_id);
       setAttendance(existing.attendance_status || 'PRESENT');
 
-      const existingMode: 'ZIYADAH' | 'NURONIYYAH' | 'IQRA' =
-        existing.assessment_mode === 'IQRA' || existing.iqra_level != null || existing.iqra_page_start != null || existing.iqra_page_end != null
-          ? 'IQRA'
-          : (existing.assessment_mode === 'NURONIYYAH' || existing.nuroniyyah_dars)
-            ? 'NURONIYYAH'
-            : 'ZIYADAH';
+      // Map legacy IQRA to NURONIYYAH in UI
+      const existingMode = (existing.assessment_mode === 'NURONIYYAH' || existing.nuroniyyah_dars)
+        ? 'NURONIYYAH'
+        : (existing.assessment_mode === 'IQRA' || existing.iqra_level != null || existing.iqra_page_start != null)
+          ? 'NURONIYYAH'
+          : 'ZIYADAH';
       setAssessmentMode(existingMode);
 
       if (existingMode === 'NURONIYYAH') {
-        setNuroniyyahDars(existing.nuroniyyah_dars || '');
+        const dars = existing.nuroniyyah_dars || (existing.iqra_level ? `Ad-Dars ${existing.iqra_level}` : '');
+        setNuroniyyahDars(dars);
         setLinesAdded(existing.lines_added != null ? String(existing.lines_added) : '');
-        setStartSurah(undefined);
-        setStartAyah('');
-        setEndSurah(undefined);
-        setEndAyah('');
-        setIqraLevel(undefined);
-        setIqraPageStart('');
-        setIqraPageEnd('');
-      } else if (existingMode === 'IQRA') {
-        setNuroniyyahDars('');
-        setLinesAdded('');
         setStartSurah(undefined);
         setStartAyah('');
         setEndSurah(undefined);
@@ -294,31 +267,17 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
     ApiService.getDraftLocal(draftKey).then(draft => {
       if (draft) {
         setAttendance(draft.attendance || 'UNASSESSED');
-        const draftMode: 'ZIYADAH' | 'NURONIYYAH' | 'IQRA' =
-          draft.assessmentMode === 'IQRA' ? 'IQRA'
-            : draft.assessmentMode === 'NURONIYYAH' ? 'NURONIYYAH'
-              : (draft.assessmentMode || (selectedStudent?.skill_status_start === 'NON_BBL' ? 'NURONIYYAH' : 'ZIYADAH'));
+        const draftMode = (draft.assessmentMode === 'NURONIYYAH' || draft.assessmentMode === 'IQRA')
+          ? 'NURONIYYAH'
+          : (draft.assessmentMode || (selectedStudent?.skill_status_start === 'NON_BBL' ? 'NURONIYYAH' : 'ZIYADAH'));
         setAssessmentMode(draftMode);
         if (draftMode === 'NURONIYYAH') {
-          setNuroniyyahDars(draft.nuroniyyahDars || '');
+          setNuroniyyahDars(draft.nuroniyyahDars || (draft.iqraLevel ? `Ad-Dars ${draft.iqraLevel}` : ''));
           setLinesAdded(draft.linesAdded || '');
           setStartSurah(undefined);
           setStartAyah('');
           setEndSurah(undefined);
           setEndAyah('');
-          setIqraLevel(undefined);
-          setIqraPageStart('');
-          setIqraPageEnd('');
-        } else if (draftMode === 'IQRA') {
-          setNuroniyyahDars('');
-          setLinesAdded('');
-          setStartSurah(undefined);
-          setStartAyah('');
-          setEndSurah(undefined);
-          setEndAyah('');
-          setIqraLevel(draft.iqraLevel != null ? Number(draft.iqraLevel) : undefined);
-          setIqraPageStart(draft.iqraPageStart != null ? String(draft.iqraPageStart) : '');
-          setIqraPageEnd(draft.iqraPageEnd != null ? String(draft.iqraPageEnd) : '');
         } else {
           setStartSurah(draft.startSurah);
           setStartAyah(draft.startAyah || '');
@@ -326,9 +285,6 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
           setEndAyah(draft.endAyah || '');
           setLinesAdded(draft.linesAdded || '');
           setNuroniyyahDars('');
-          setIqraLevel(undefined);
-          setIqraPageStart('');
-          setIqraPageEnd('');
         }
         setNotes(draft.notes || '');
         return;
@@ -360,12 +316,11 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
 
         if (prevAssessment && (prevAssessment.assessment_mode === 'NURONIYYAH' || prevAssessment.nuroniyyah_dars)) {
           setNuroniyyahDars(prevAssessment.nuroniyyah_dars || '');
+        } else if (prevAssessment && (prevAssessment.assessment_mode === 'IQRA' || prevAssessment.iqra_level != null)) {
+          setNuroniyyahDars(`Ad-Dars ${prevAssessment.iqra_level || 1}`);
         } else {
           setNuroniyyahDars('Ad-Dars 1');
         }
-        setIqraLevel(undefined);
-        setIqraPageStart('');
-        setIqraPageEnd('');
       } else {
         setNuroniyyahDars('');
         setIqraLevel(undefined);
@@ -417,19 +372,16 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
     const draftData = {
       attendance,
       assessmentMode,
-      nuroniyyahDars: assessmentMode === 'NURONIYYAH' ? nuroniyyahDars : '',
-      iqraLevel: assessmentMode === 'IQRA' ? iqraLevel : undefined,
-      iqraPageStart: assessmentMode === 'IQRA' ? iqraPageStart : '',
-      iqraPageEnd: assessmentMode === 'IQRA' ? iqraPageEnd : '',
+      nuroniyyahDars: (assessmentMode === 'NURONIYYAH' || assessmentMode === 'IQRA') ? nuroniyyahDars : '',
       startSurah: assessmentMode === 'ZIYADAH' ? startSurah : undefined,
       startAyah: assessmentMode === 'ZIYADAH' ? startAyah : '',
       endSurah: assessmentMode === 'ZIYADAH' ? endSurah : undefined,
       endAyah: assessmentMode === 'ZIYADAH' ? endAyah : '',
-      linesAdded: assessmentMode === 'IQRA' ? '' : linesAdded,
+      linesAdded,
       notes
     };
     ApiService.saveDraftLocal(draftKey, draftData);
-  }, [attendance, assessmentMode, startSurah, startAyah, endSurah, endAyah, linesAdded, nuroniyyahDars, iqraLevel, iqraPageStart, iqraPageEnd, notes, selectedStudentId, selectedSessionConfig, existingAssessmentId, getDraftKey]);
+  }, [attendance, assessmentMode, startSurah, startAyah, endSurah, endAyah, linesAdded, nuroniyyahDars, notes, selectedStudentId, selectedSessionConfig, existingAssessmentId, getDraftKey]);
 
   // Student progress statistics calculation
   const studentStats = useMemo(() => {
@@ -466,7 +418,7 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
       return 'Pilih status kehadiran siswa terlebih dahulu.';
     }
 
-    // If final evaluation session, learning progress fields are not required
+    // If final evaluation session, Ziyadah / Nuroniyyah fields are not required
     if (isFinalEvaluationSession) {
       return null;
     }
@@ -497,22 +449,12 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
         if (linesAdded === '' || Number(linesAdded) < 0) {
           return 'Jumlah penambahan baris setoran baru wajib diisi (minimal 0).';
         }
-      } else if (assessmentMode === 'NURONIYYAH') {
+      } else if (assessmentMode === 'NURONIYYAH' || assessmentMode === 'IQRA') {
         if (!nuroniyyahDars || !nuroniyyahDars.trim()) {
           return 'Ad-Dars Nuroniyyah (1–17) wajib dipilih atau diisi.';
         }
         if (linesAdded === '' || Number(linesAdded) < 0) {
           return 'Jumlah penambahan baris Nuroniyyah wajib diisi (minimal 0).';
-        }
-      } else if (assessmentMode === 'IQRA') {
-        if (iqraLevel == null || iqraLevel < 1 || iqraLevel > 6) {
-          return "Jilid Iqro' wajib dipilih (1–6).";
-        }
-        if (!iqraPageStart || Number(iqraPageStart) < 1) {
-          return "Halaman awal Iqro' wajib diisi dengan angka positif.";
-        }
-        if (!iqraPageEnd || Number(iqraPageEnd) < Number(iqraPageStart)) {
-          return "Halaman akhir Iqro' harus sama atau lebih besar dari halaman awal.";
         }
       }
     }
@@ -542,8 +484,7 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
 
       const isPresent = attendance === 'PRESENT';
       const isZiyadah = !isFinalEvaluationSession && isPresent && assessmentMode === 'ZIYADAH';
-      const isNuroniyyah = !isFinalEvaluationSession && isPresent && assessmentMode === 'NURONIYYAH';
-      const isIqra = !isFinalEvaluationSession && isPresent && assessmentMode === 'IQRA';
+      const isNuroniyyah = !isFinalEvaluationSession && isPresent && (assessmentMode === 'NURONIYYAH' || assessmentMode === 'IQRA');
 
       const payload = {
         student_id: selectedStudentId,
@@ -551,17 +492,13 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
         session_config_id: selectedSessionConfig?.session_config_id,
         session_no: selectedSessionConfig?.session_no,
         attendance: attendance,
-        assessment_mode: isFinalEvaluationSession ? undefined : (isPresent ? assessmentMode : undefined),
+        assessment_mode: isFinalEvaluationSession ? undefined : (isPresent ? (assessmentMode === 'IQRA' ? 'NURONIYYAH' : assessmentMode) : undefined),
         start_surah: isZiyadah ? Number(startSurah) : undefined,
         start_ayah: isZiyadah ? Number(startAyah) : undefined,
         end_surah: isZiyadah ? Number(endSurah) : undefined,
         end_ayah: isZiyadah ? Number(endAyah) : undefined,
-        lines_added: (isZiyadah || isNuroniyyah) && linesAdded !== '' ? Number(linesAdded) : undefined,
+        lines_added: (isZiyadah || isNuroniyyah) && linesAdded !== '' ? Number(linesAdded) : 0,
         nuroniyyah_dars: isNuroniyyah ? nuroniyyahDars : undefined,
-        iqra_level: isIqra ? iqraLevel : undefined,
-        iqra_page_start: isIqra ? Number(iqraPageStart) : undefined,
-        iqra_page_end: isIqra ? Number(iqraPageEnd) : undefined,
-        iqra_pages_added: isIqra ? iqraPagesAdded : undefined,
         notes: notes,
         teacher_id: teacherIdToUse
       };
@@ -720,8 +657,6 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
         iqra_level: undefined,
         iqra_page_start: undefined,
         iqra_page_end: undefined,
-        iqra_pages_added: undefined,
-        nuroniyyah_dars: undefined,
         notes: notes,
         teacher_id: teacherIdToUse
       };
@@ -1179,7 +1114,7 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
                     rows={2}
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
-                    placeholder="Catatan kehadiran siswa pada sesi evaluasi akhir..."
+                    placeholder="Catatan kehadiran santri pada sesi evaluasi akhir..."
                     className="w-full px-3 py-2 bg-white border border-purple-200 rounded-lg text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500"
                   ></textarea>
                 </div>
@@ -1196,7 +1131,7 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
                       Siswa tidak mengikuti sesi evaluasi akhir ({attendance === 'SICK' ? 'Sakit' : attendance === 'PERMISSION' ? 'Izin' : 'Alpa'}).
                     </h4>
                     <p className="text-[11px] text-slate-500 mt-0.5">
-                      Data evaluasi akhir tidak dibuat secara otomatis. Simpan presensi untuk mencatat ketidakhadiran siswa pada sesi ini.
+                      Data evaluasi akhir tidak dibuat secara otomatis. Simpan presensi untuk mencatat ketidakhadiran santri pada sesi ini.
                     </p>
                   </div>
                 </div>
@@ -1224,7 +1159,7 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-2">
               Mode Pembelajaran
             </label>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 max-w-lg">
+            <div className="grid grid-cols-2 gap-2 max-w-xs">
               <button
                 type="button"
                 onClick={() => handleModeChange('ZIYADAH')}
@@ -1240,34 +1175,23 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
                 type="button"
                 onClick={() => handleModeChange('NURONIYYAH')}
                 className={`py-2.5 px-4 text-xs font-bold rounded transition border text-center ${
-                  assessmentMode === 'NURONIYYAH'
+                  assessmentMode === 'NURONIYYAH' || assessmentMode === 'IQRA'
                     ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
                     : 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
                 }`}
               >
                 Nuroniyyah
               </button>
-              <button
-                type="button"
-                onClick={() => handleModeChange('IQRA')}
-                className={`py-2.5 px-4 text-xs font-bold rounded transition border text-center ${
-                  assessmentMode === 'IQRA'
-                    ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                    : 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
-                }`}
-              >
-                Iqro&apos;
-              </button>
             </div>
           </div>
         )}
 
-        {/* Detail pembelajaran sesuai mode (ONLY for HADIR and NOT Final Evaluation) */}
+        {/* Setoran Hafalan / Pembelajaran Nuroniyyah Fields (ONLY for HADIR and NOT Final Evaluation) */}
         {!isFinalEvaluationSession && attendance === 'PRESENT' && (
           <div className="space-y-5 pt-2 border-t border-slate-100 animate-in fade-in">
             <h4 className="font-bold text-xs uppercase text-slate-700 tracking-wider flex items-center space-x-1.5">
               <Layers className="w-4 h-4 text-blue-600" />
-              <span>{assessmentMode === 'ZIYADAH' ? 'Detail Setoran Hafalan Al-Qur\'an' : assessmentMode === 'NURONIYYAH' ? 'Detail Pembelajaran Nuroniyyah' : "Detail Pembelajaran Iqro'"}</span>
+              <span>{assessmentMode === 'ZIYADAH' ? 'Detail Setoran Hafalan Al-Qur\'an' : 'Detail Pembelajaran Nuroniyyah'}</span>
             </h4>
             
             {/* ZIYADAH MODE */}
@@ -1343,7 +1267,7 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
             )}
 
             {/* NURONIYYAH MODE */}
-            {assessmentMode === 'NURONIYYAH' && (
+            {(assessmentMode === 'NURONIYYAH' || assessmentMode === 'IQRA') && (
               <div className="space-y-4 p-4 bg-slate-50 border border-slate-200 rounded-lg">
                 {/* 17 Ad-Dars Selector */}
                 <div>
@@ -1393,71 +1317,6 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
                       className="w-24 px-3 py-1.5 bg-white border border-blue-300 font-bold text-sm text-blue-900 text-center rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                     <span className="text-xs font-bold text-blue-900">Baris</span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* IQRO MODE */}
-            {assessmentMode === 'IQRA' && (
-              <div className="space-y-4 p-4 bg-slate-50 border border-slate-200 rounded-lg">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
-                    Jilid Iqro&apos;
-                  </label>
-                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
-                    {Array.from({ length: 6 }, (_, i) => i + 1).map((level) => (
-                      <button
-                        type="button"
-                        key={level}
-                        onClick={() => setIqraLevel(level)}
-                        className={`py-2 px-2 text-[11px] font-bold rounded transition border text-center ${
-                          iqraLevel === level
-                            ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                            : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                        }`}
-                      >
-                        Jilid {level}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Halaman Awal</label>
-                    <input
-                      type="number"
-                      min={1}
-                      value={iqraPageStart}
-                      onChange={(e) => setIqraPageStart(e.target.value)}
-                      placeholder="mis: 12"
-                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Halaman Akhir</label>
-                    <input
-                      type="number"
-                      min={1}
-                      value={iqraPageEnd}
-                      onChange={(e) => setIqraPageEnd(e.target.value)}
-                      placeholder="mis: 15"
-                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 bg-blue-50/60 border border-blue-200 rounded-lg gap-3">
-                  <div>
-                    <span className="text-xs font-bold text-blue-900 block">Penambahan Halaman Iqro&apos;</span>
-                    <p className="text-[11px] text-blue-700">Dihitung otomatis dari rentang halaman awal sampai akhir</p>
-                  </div>
-                  <div className="flex items-center space-x-2 shrink-0">
-                    <span className="inline-flex min-w-16 justify-center px-3 py-1.5 bg-white border border-blue-300 font-bold text-sm text-blue-900 rounded">
-                      +{iqraPagesAdded}
-                    </span>
-                    <span className="text-xs font-bold text-blue-900">Halaman</span>
                   </div>
                 </div>
               </div>

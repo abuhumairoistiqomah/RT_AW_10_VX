@@ -14,7 +14,7 @@ import {
   INITIAL_PARTICIPANTS, INITIAL_ASSESSMENTS, INITIAL_FINAL_EVALUATIONS,
   INITIAL_AUDIT_LOGS
 } from '../data/mockData';
-import { calculateStats, getDistributionBuckets, calculateSkillTransitions } from '../utils/statistics';
+import { calculateStats, getDistributionBuckets, getStudentLinesMap, calculateSkillTransitions } from '../utils/statistics';
 import { getCurrentIso } from '../utils/date';
 import { getSurahByNo } from '../utils/quran';
 import { generateRandomAccessCode } from '../utils/accessCode';
@@ -1281,20 +1281,14 @@ export class ApiService {
       
       let ziyadahLines = 0;
       let nuroniyyahLines = 0;
-      let iqraPages = 0;
       studentAsms.forEach(a => {
-        const mode = a.assessment_mode?.toUpperCase();
-        if (mode === 'IQRA' || (!mode && (a.iqra_level != null || a.iqra_page_start != null || a.iqra_page_end != null))) {
-          const explicit = Number(a.iqra_pages_added);
-          const start = Number(a.iqra_page_start);
-          const end = Number(a.iqra_page_end);
-          const derived = Number.isFinite(start) && Number.isFinite(end) && start > 0 && end >= start ? end - start + 1 : 0;
-          iqraPages += Number.isFinite(explicit) && explicit >= 0 ? explicit : derived;
-          return;
-        }
-
         const lines = Number(a.lines_added) || 0;
-        if (mode === 'NURONIYYAH' || (!mode && a.nuroniyyah_dars)) {
+        const mode = a.assessment_mode?.toUpperCase();
+        if (mode === 'NURONIYYAH' || mode === 'IQRA') {
+          nuroniyyahLines += lines;
+        } else if (mode === 'ZIYADAH') {
+          ziyadahLines += lines;
+        } else if (a.nuroniyyah_dars || a.iqra_level || a.iqra_page_start || a.iqra_page_end) {
           nuroniyyahLines += lines;
         } else {
           ziyadahLines += lines;
@@ -1327,7 +1321,6 @@ export class ApiService {
         totalLinesAdded: totalLines,
         totalZiyadahLinesAdded: ziyadahLines,
         totalNuroniyyahLinesAdded: nuroniyyahLines,
-        totalIqraPagesAdded: iqraPages,
         completionStatus: studentEval ? studentEval.completion_status : 'NOT_EVALUATED',
         session_group_id: p.session_group_id || selectedHalaqah.session_group_id
       };
@@ -1634,8 +1627,7 @@ export class ApiService {
             nuroniyyah_dars: undefined,
             iqra_level: undefined,
             iqra_page_start: undefined,
-            iqra_page_end: undefined,
-            iqra_pages_added: undefined
+            iqra_page_end: undefined
           })
         };
         list[existingIdx] = updated;
@@ -1848,26 +1840,9 @@ export class ApiService {
     const evals = await this.getFinalEvaluations(event_id);
     const studentEval = evals.find(e => e.student_id === matchedStudent.student_id || e.participant_id === participant.participant_id);
 
-    let totalZiyadahLinesAdded = 0;
-    let totalNuroniyyahLinesAdded = 0;
-    let totalIqraPagesAdded = 0;
-    studentAssessments
+    const totalLinesAdded = studentAssessments
       .filter(a => a.attendance_status === 'PRESENT')
-      .forEach(a => {
-        const mode = a.assessment_mode?.toUpperCase();
-        if (mode === 'IQRA' || (!mode && (a.iqra_level != null || a.iqra_page_start != null || a.iqra_page_end != null))) {
-          const explicit = Number(a.iqra_pages_added);
-          const start = Number(a.iqra_page_start);
-          const end = Number(a.iqra_page_end);
-          const derived = Number.isFinite(start) && Number.isFinite(end) && start > 0 && end >= start ? end - start + 1 : 0;
-          totalIqraPagesAdded += Number.isFinite(explicit) && explicit >= 0 ? explicit : derived;
-        } else if (mode === 'NURONIYYAH' || (!mode && a.nuroniyyah_dars)) {
-          totalNuroniyyahLinesAdded += Number(a.lines_added) || 0;
-        } else {
-          totalZiyadahLinesAdded += Number(a.lines_added) || 0;
-        }
-      });
-    const totalLinesAdded = totalZiyadahLinesAdded + totalNuroniyyahLinesAdded;
+      .reduce((sum, a) => sum + (a.lines_added || 0), 0);
 
     const halaqahs = await this.getHalaqahList(event_id);
     const studentHalaqah = halaqahs.find(h => h.halaqah_id === participant.halaqah_id);
@@ -1897,9 +1872,6 @@ export class ApiService {
       targetText,
       targetLines: effectiveTarget.ziyadahLines,
       totalLinesAdded,
-      totalZiyadahLinesAdded,
-      totalNuroniyyahLinesAdded,
-      totalIqraPagesAdded,
       completionStatus: studentEval ? studentEval.completion_status : ('NOT_EVALUATED' as EvaluationState),
       sessions: studentAssessments.map(a => {
         const isPresent = a.attendance_status === 'PRESENT';
@@ -1916,12 +1888,7 @@ export class ApiService {
           linesAdded: isPresent && a.lines_added != null ? a.lines_added : null,
           iqraLevel: a.iqra_level,
           iqraPageStart: a.iqra_page_start,
-          iqraPageEnd: a.iqra_page_end,
-          iqraPagesAdded: a.iqra_pages_added != null
-            ? Number(a.iqra_pages_added)
-            : (a.iqra_page_start != null && a.iqra_page_end != null && Number(a.iqra_page_end) >= Number(a.iqra_page_start)
-              ? Number(a.iqra_page_end) - Number(a.iqra_page_start) + 1
-              : 0)
+          iqraPageEnd: a.iqra_page_end
         };
       })
     };
@@ -1968,32 +1935,12 @@ export class ApiService {
     const allAssessments = await this.getSessionAssessments(event_id);
     const halaqahAssessments = allAssessments.filter(a => a.halaqah_id === currentHalaqah.halaqah_id || studentIdsInHalaqah.has(a.student_id));
 
+    const linesMap = getStudentLinesMap(halaqahAssessments);
     const evals = await this.getFinalEvaluations(event_id);
 
     const mappedStudents = halaqahParticipants.map(p => {
       const st = students.find(s => s.student_id === p.student_id);
       const studentEval = evals.find(e => e.student_id === p.student_id || e.participant_id === p.participant_id);
-      const studentAssessments = halaqahAssessments.filter(a => a.student_id === p.student_id && a.attendance_status === 'PRESENT' && !a.is_deleted);
-
-      let ziyadahLines = 0;
-      let nuroniyyahLines = 0;
-      let iqraPages = 0;
-      studentAssessments.forEach(a => {
-        const mode = a.assessment_mode?.toUpperCase();
-        if (mode === 'IQRA' || (!mode && (a.iqra_level != null || a.iqra_page_start != null || a.iqra_page_end != null))) {
-          const explicit = Number(a.iqra_pages_added);
-          const start = Number(a.iqra_page_start);
-          const end = Number(a.iqra_page_end);
-          const derived = Number.isFinite(start) && Number.isFinite(end) && start > 0 && end >= start ? end - start + 1 : 0;
-          iqraPages += Number.isFinite(explicit) && explicit >= 0 ? explicit : derived;
-          return;
-        }
-
-        const lines = Number(a.lines_added) || 0;
-        if (mode === 'NURONIYYAH' || (!mode && a.nuroniyyah_dars)) nuroniyyahLines += lines;
-        else ziyadahLines += lines;
-      });
-
       return {
         student_id: p.student_id,
         participant_id: p.participant_id,
@@ -2007,10 +1954,7 @@ export class ApiService {
         target_iqra_pages: p.target_iqra_pages,
         target_source: p.target_source,
         targetText: formatParticipantTarget(p, currentHalaqah),
-        totalLinesAdded: ziyadahLines + nuroniyyahLines,
-        totalZiyadahLinesAdded: ziyadahLines,
-        totalNuroniyyahLinesAdded: nuroniyyahLines,
-        totalIqraPagesAdded: iqraPages,
+        totalLinesAdded: linesMap[p.student_id] || 0,
         completionStatus: studentEval ? studentEval.completion_status : ('NOT_EVALUATED' as EvaluationState)
       };
     });
@@ -2086,10 +2030,6 @@ export class ApiService {
     let lines_added: number | undefined;
     let assessment_mode: AssessmentMode | undefined;
     let nuroniyyah_dars: string | undefined;
-    let iqra_level: number | undefined;
-    let iqra_page_start: number | undefined;
-    let iqra_page_end: number | undefined;
-    let iqra_pages_added: number | undefined;
 
     if (attendanceStatus === 'PRESENT') {
       const mode: AssessmentMode = payload.assessment_mode || (payload.nuroniyyah_dars ? 'NURONIYYAH' : (payload.iqra_level ? 'IQRA' : 'ZIYADAH'));
@@ -2097,7 +2037,7 @@ export class ApiService {
       const rawLines = payload.lines_added ?? payload.totalLines;
 
       if (mode === 'NURONIYYAH') {
-        const dars = payload.nuroniyyah_dars || '';
+        const dars = payload.nuroniyyah_dars || (payload.iqra_level ? `Ad-Dars ${payload.iqra_level}` : '');
         if (!dars) {
           throw new Error('Untuk status HADIR pada mode Nuroniyyah, data Ad-Dars wajib dipilih.');
         }
@@ -2107,23 +2047,7 @@ export class ApiService {
         nuroniyyah_dars = String(dars);
         lines_added = Number(rawLines);
       } else if (mode === 'IQRA') {
-        const level = Number(payload.iqra_level);
-        const pageStart = Number(payload.iqra_page_start);
-        const pageEnd = Number(payload.iqra_page_end);
-        if (!Number.isFinite(level) || level < 1 || level > 6) {
-          throw new Error("Jilid Iqro' harus angka 1 sampai 6.");
-        }
-        if (!Number.isFinite(pageStart) || pageStart < 1 || !Number.isFinite(pageEnd) || pageEnd < pageStart) {
-          throw new Error("Rentang halaman Iqro' tidak valid.");
-        }
-        iqra_level = level;
-        iqra_page_start = pageStart;
-        iqra_page_end = pageEnd;
-        const explicitPages = Number(payload.iqra_pages_added);
-        iqra_pages_added = Number.isFinite(explicitPages) && explicitPages >= 0
-          ? explicitPages
-          : (pageEnd - pageStart + 1);
-        lines_added = undefined;
+        lines_added = rawLines != null ? Number(rawLines) : 0;
       } else {
         // ZIYADAH
         assessment_mode = 'ZIYADAH';
@@ -2153,10 +2077,6 @@ export class ApiService {
       lines_added = undefined;
       assessment_mode = undefined;
       nuroniyyah_dars = undefined;
-      iqra_level = undefined;
-      iqra_page_start = undefined;
-      iqra_page_end = undefined;
-      iqra_pages_added = undefined;
     }
 
     const asm: SessionAssessment = {
@@ -2171,10 +2091,6 @@ export class ApiService {
       attendance_status: attendanceStatus,
       assessment_mode,
       nuroniyyah_dars,
-      iqra_level,
-      iqra_page_start,
-      iqra_page_end,
-      iqra_pages_added,
       surah_start,
       ayah_start,
       surah_end,
@@ -2531,56 +2447,29 @@ export class ApiService {
         studentAsmMap.set(a.student_id, existing);
       });
 
-      const ziyadahTotals: number[] = [];
-      const nuroniyyahTotals: number[] = [];
-      const iqraTotals: number[] = [];
-      let noAnyProgressCount = 0;
+      const validProgressLines: number[] = [];
+      let missingProgressCount = 0;
 
       participants.forEach(p => {
-        const presentAsms = (studentAsmMap.get(p.student_id) || []).filter(a => a.attendance_status === 'PRESENT');
-        let ziyadahLines = 0;
-        let nuroniyyahLines = 0;
-        let iqraPages = 0;
-        let ziyadahCount = 0;
-        let nuroniyyahCount = 0;
-        let iqraCount = 0;
-
-        presentAsms.forEach(a => {
-          const mode = a.assessment_mode?.toUpperCase();
-          if (mode === 'IQRA' || (!mode && (a.iqra_level != null || a.iqra_page_start != null || a.iqra_page_end != null))) {
-            const explicit = Number(a.iqra_pages_added);
-            const start = Number(a.iqra_page_start);
-            const end = Number(a.iqra_page_end);
-            const derived = Number.isFinite(start) && Number.isFinite(end) && start > 0 && end >= start ? end - start + 1 : 0;
-            iqraPages += Number.isFinite(explicit) && explicit >= 0 ? explicit : derived;
-            iqraCount++;
-            return;
-          }
-
-          const lines = Number(a.lines_added) || 0;
-          if (mode === 'NURONIYYAH' || (!mode && a.nuroniyyah_dars)) {
-            nuroniyyahLines += lines;
-            nuroniyyahCount++;
+        const asms = studentAsmMap.get(p.student_id);
+        if (asms && asms.length > 0) {
+          const presentAsms = asms.filter(a => a.attendance_status === 'PRESENT');
+          if (presentAsms.length > 0) {
+            const totalLines = presentAsms.reduce((sum, a) => sum + (a.lines_added || 0), 0);
+            validProgressLines.push(totalLines);
           } else {
-            ziyadahLines += lines;
-            ziyadahCount++;
+            missingProgressCount++;
           }
-        });
-
-        if (ziyadahCount > 0) ziyadahTotals.push(ziyadahLines);
-        if (nuroniyyahCount > 0) nuroniyyahTotals.push(nuroniyyahLines);
-        if (iqraCount > 0) iqraTotals.push(iqraPages);
-        if (ziyadahCount === 0 && nuroniyyahCount === 0 && iqraCount === 0) noAnyProgressCount++;
+        } else {
+          missingProgressCount++;
+        }
       });
 
       const participantCount = participants.length;
-      const validProgressCount = ziyadahTotals.length;
-      const missingProgressCount = participantCount - validProgressCount;
+      const validProgressCount = validProgressLines.length;
 
-      const stats = calculateStats(ziyadahTotals);
-      const distributionBuckets = getDistributionBuckets(ziyadahTotals);
-      const nuroniyyahStats = calculateStats(nuroniyyahTotals);
-      const iqraStats = calculateStats(iqraTotals);
+      const stats = calculateStats(validProgressLines);
+      const distributionBuckets = getDistributionBuckets(validProgressLines);
 
       const evalMap: Record<string, SkillStatus> = {};
       const completionMap = new Map<string, CompletionStatus>();
@@ -2617,8 +2506,6 @@ export class ApiService {
         : 0;
 
       stats.completionRate = completionRateAmongEvaluated;
-      nuroniyyahStats.completionRate = completionRateAmongEvaluated;
-      iqraStats.completionRate = completionRateAmongEvaluated;
 
       const { transitions: skillTransitions, notEvaluatedSkillCount } = calculateSkillTransitions(participants, evalMap);
 
@@ -2626,18 +2513,6 @@ export class ApiService {
         participantCount,
         validProgressCount,
         missingProgressCount,
-        ziyadahProgressCount: ziyadahTotals.length,
-        ziyadahMissingCount: participantCount - ziyadahTotals.length,
-        ziyadahStats: stats,
-        ziyadahDistributionBuckets: distributionBuckets,
-        nuroniyyahProgressCount: nuroniyyahTotals.length,
-        nuroniyyahMissingCount: participantCount - nuroniyyahTotals.length,
-        nuroniyyahStats,
-        nuroniyyahDistributionBuckets: getDistributionBuckets(nuroniyyahTotals),
-        iqraProgressCount: iqraTotals.length,
-        iqraMissingCount: participantCount - iqraTotals.length,
-        iqraStats,
-        noAnyProgressCount,
         evaluatedCount,
         notEvaluatedCount,
         evaluationCoverage,
@@ -2671,17 +2546,11 @@ export class ApiService {
             evaluationCoverage: metrics.evaluationCoverage,
             completionRateAmongEvaluated: metrics.completionRateAmongEvaluated,
             stats: metrics.stats,
-            totalLines: metrics.ziyadahStats.totalLines,
-            meanLines: metrics.ziyadahStats.mean,
-            medianLines: metrics.ziyadahStats.median,
-            stdDev: metrics.ziyadahStats.stdDev,
-            cv: metrics.ziyadahStats.cv,
-            ziyadahProgressCount: metrics.ziyadahProgressCount,
-            ziyadahStats: metrics.ziyadahStats,
-            nuroniyyahProgressCount: metrics.nuroniyyahProgressCount,
-            nuroniyyahStats: metrics.nuroniyyahStats,
-            iqraProgressCount: metrics.iqraProgressCount,
-            iqraStats: metrics.iqraStats
+            totalLines: metrics.stats.totalLines,
+            meanLines: metrics.stats.mean,
+            medianLines: metrics.stats.median,
+            stdDev: metrics.stats.stdDev,
+            cv: metrics.stats.cv
           };
         })
       );
@@ -2712,17 +2581,11 @@ export class ApiService {
             evaluationCoverage: metrics.evaluationCoverage,
             completionRateAmongEvaluated: metrics.completionRateAmongEvaluated,
             stats: metrics.stats,
-            totalLines: metrics.ziyadahStats.totalLines,
-            meanLines: metrics.ziyadahStats.mean,
-            medianLines: metrics.ziyadahStats.median,
-            stdDev: metrics.ziyadahStats.stdDev,
-            cv: metrics.ziyadahStats.cv,
-            ziyadahProgressCount: metrics.ziyadahProgressCount,
-            ziyadahStats: metrics.ziyadahStats,
-            nuroniyyahProgressCount: metrics.nuroniyyahProgressCount,
-            nuroniyyahStats: metrics.nuroniyyahStats,
-            iqraProgressCount: metrics.iqraProgressCount,
-            iqraStats: metrics.iqraStats
+            totalLines: metrics.stats.totalLines,
+            meanLines: metrics.stats.mean,
+            medianLines: metrics.stats.median,
+            stdDev: metrics.stats.stdDev,
+            cv: metrics.stats.cv
           };
         })
       );
@@ -2754,12 +2617,6 @@ export class ApiService {
         completionRateAmongEvaluated: 0,
         stats: calculateStats([]),
         distributionBuckets: [],
-        ziyadahProgressCount: 0,
-        ziyadahStats: calculateStats([]),
-        nuroniyyahProgressCount: 0,
-        nuroniyyahStats: calculateStats([]),
-        iqraProgressCount: 0,
-        iqraStats: calculateStats([]),
         skillTransitions: [],
         notEvaluatedSkillCount: 0,
         cohortSize: cohortStudentIds ? cohortStudentIds.size : 0

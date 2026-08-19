@@ -220,36 +220,11 @@ export const TeacherWorkspaceProvider: React.FC<{
 
     return students.map(s => {
       const asms = studentAsmsMap.get(s.student_id) || [];
-      let ziyadahLines = 0;
-      let nuroniyyahLines = 0;
-      let iqraPages = 0;
-
-      asms.forEach(a => {
-        const mode = a.assessment_mode?.toUpperCase();
-        if (mode === 'IQRA' || (!mode && (a.iqra_level != null || a.iqra_page_start != null || a.iqra_page_end != null))) {
-          const explicit = Number(a.iqra_pages_added);
-          const start = Number(a.iqra_page_start);
-          const end = Number(a.iqra_page_end);
-          const derived = Number.isFinite(start) && Number.isFinite(end) && start > 0 && end >= start ? end - start + 1 : 0;
-          iqraPages += Number.isFinite(explicit) && explicit >= 0 ? explicit : derived;
-          return;
-        }
-
-        const lines = Number(a.lines_added) || 0;
-        if (mode === 'NURONIYYAH' || (!mode && a.nuroniyyah_dars)) {
-          nuroniyyahLines += lines;
-        } else {
-          ziyadahLines += lines;
-        }
-      });
-
+      const totalLines = asms.reduce((sum, a) => sum + (Number(a.lines_added) || 0), 0);
       const studentEval = evalMap.get(s.participant_id) || evalMap.get(s.student_id);
       return {
         ...s,
-        totalLinesAdded: ziyadahLines + nuroniyyahLines,
-        totalZiyadahLinesAdded: ziyadahLines,
-        totalNuroniyyahLinesAdded: nuroniyyahLines,
-        totalIqraPagesAdded: iqraPages,
+        totalLinesAdded: totalLines,
         completionStatus: studentEval ? studentEval.completion_status : (s.completionStatus || 'NOT_EVALUATED')
       };
     });
@@ -525,12 +500,10 @@ export const TeacherWorkspaceProvider: React.FC<{
       ayah_start: payload.start_ayah,
       surah_end: payload.end_surah,
       ayah_end: payload.end_ayah,
-      lines_added: payload.lines_added,
+      lines_added: payload.lines_added || 0,
       iqra_level: payload.iqra_level,
       iqra_page_start: payload.iqra_page_start,
       iqra_page_end: payload.iqra_page_end,
-      iqra_pages_added: payload.iqra_pages_added,
-      nuroniyyah_dars: payload.nuroniyyah_dars,
       session_note: payload.notes || '',
       teacher_id: payloadWithTeacher.teacher_id,
       is_deleted: false,

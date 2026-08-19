@@ -55,11 +55,11 @@ export function formatSkillBadgeText(skill?: string | null): string {
  *    - Otherwise, fallback to Halaqah default targets.
  * 2. Ziyadah Target uses participant.target_lines / halaqah.target_ziyadah_lines.
  * 3. Nuroniyyah Target uses participant.target_nuroniyyah_lines / halaqah.target_nuroniyyah_lines.
- *    target_iqra_pages is retained only as a legacy fallback for old Nuroniyyah target data.
+ *    (target_iqra_pages is legacy only and not used for new Nuroniyyah logic).
  * 4. Display Text follows skill_status_start:
  *    - NON_BBL: Nuroniyyah target only (e.g. "Nur 10 Baris")
  *    - BBL / BBLS: Ziyadah target only (e.g. "Zi 15 Baris")
- *    - blank/unknown: Ziyadah target only (same assumption as BBL/BBLS)
+ *    - blank/unknown: Both available targets (e.g. "Zi 15 Baris • Nur 10 Baris")
  */
 export function getEffectiveTargets(
   participant?: TargetHolder | null,
@@ -180,31 +180,33 @@ export function formatParticipantTarget(
 }
 
 /**
- * Formats split progress display for student table.
- * Ziyadah and Nuroniyyah are counted in lines; Iqro' is counted in pages.
- * Examples:
- *   "Zi +8"
- *   "Nur +5"
- *   "Iq +3"
- *   "Zi +8 • Nur +5 • Iq +3"
- * If all progress values are zero, returns "0".
+ * Formats split progress display for student table:
+ * If totalZiyadahLinesAdded > 0 AND totalNuroniyyahLinesAdded > 0:
+ *   "Zi +X • Nur +Y Baris"
+ * If only Ziyadah > 0:
+ *   "Zi +X Baris"
+ * If only Nuroniyyah > 0:
+ *   "Nur +Y Baris"
+ * If both are 0:
+ *   "0 Baris"
  */
 export function formatSplitProgressDisplay(student: {
   totalZiyadahLinesAdded?: number;
   totalNuroniyyahLinesAdded?: number;
-  totalIqraPagesAdded?: number;
   totalLinesAdded?: number;
   [key: string]: any;
 }): string {
-  const hasSplitLineFields = student.totalZiyadahLinesAdded !== undefined || student.totalNuroniyyahLinesAdded !== undefined;
-  const zi = Number(student.totalZiyadahLinesAdded ?? (hasSplitLineFields ? 0 : student.totalLinesAdded ?? 0)) || 0;
+  const zi = Number(student.totalZiyadahLinesAdded ?? (student.totalNuroniyyahLinesAdded !== undefined ? 0 : student.totalLinesAdded ?? 0)) || 0;
   const nur = Number(student.totalNuroniyyahLinesAdded) || 0;
-  const iq = Number(student.totalIqraPagesAdded) || 0;
 
-  const parts: string[] = [];
-  if (zi > 0) parts.push(`Zi +${zi}`);
-  if (nur > 0) parts.push(`Nur +${nur}`);
-  if (iq > 0) parts.push(`Iq +${iq}`);
-
-  return parts.length > 0 ? parts.join(' • ') : '0';
+  if (zi > 0 && nur > 0) {
+    return `Zi +${zi} • Nur +${nur} Baris`;
+  }
+  if (zi > 0) {
+    return `Zi +${zi} Baris`;
+  }
+  if (nur > 0) {
+    return `Nur +${nur} Baris`;
+  }
+  return '0 Baris';
 }

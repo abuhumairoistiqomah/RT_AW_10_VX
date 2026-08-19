@@ -18,18 +18,6 @@ import { SchoolLogo } from '../common/SchoolLogo';
 
 const STORAGE_KEY = 'rt_parent_last_student';
 
-
-function formatPublicProgressSummary(result: any): string {
-  const zi = Number(result?.totalZiyadahLinesAdded ?? result?.totalLinesAdded ?? 0) || 0;
-  const nur = Number(result?.totalNuroniyyahLinesAdded) || 0;
-  const iq = Number(result?.totalIqraPagesAdded) || 0;
-  const parts: string[] = [];
-  if (zi > 0) parts.push(`Zi +${zi}`);
-  if (nur > 0) parts.push(`Nur +${nur}`);
-  if (iq > 0) parts.push(`Iq +${iq}`);
-  return parts.length ? parts.join(' • ') : '0';
-}
-
 interface StudentProgressLookupProps {
   onOpenLogin?: () => void;
 }
@@ -270,10 +258,10 @@ export const StudentProgressLookup: React.FC<StudentProgressLookupProps> = ({
                 <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                   <h4 className="font-bold text-xs uppercase text-slate-700 flex items-center space-x-2">
                     <Clock className="w-4 h-4 text-blue-600" />
-                    <span>Catatan Capaian Per Sesi</span>
+                    <span>Catatan Capaian Per Sesi Hafalan</span>
                   </h4>
                   <span className="text-xs font-semibold text-blue-700 bg-blue-50 px-2.5 py-1 rounded border border-blue-200">
-                    Total Penambahan: <strong>{formatPublicProgressSummary(result)}</strong>
+                    Total Penambahan: <strong>{result.totalLinesAdded} Baris</strong>
                   </span>
                 </div>
 
@@ -285,7 +273,7 @@ export const StudentProgressLookup: React.FC<StudentProgressLookupProps> = ({
                           <th className="py-3 px-4">Sesi Ke</th>
                           <th className="py-3 px-4">Kehadiran</th>
                           <th className="py-3 px-4">Materi / Surah Setoran</th>
-                          <th className="py-3 px-4 text-right">Penambahan</th>
+                          <th className="py-3 px-4 text-right">Penambahan Baris</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
@@ -301,10 +289,10 @@ export const StudentProgressLookup: React.FC<StudentProgressLookupProps> = ({
                             </td>
                             <td className="py-3 px-4 font-medium text-slate-800">
                               {s.attendance === 'PRESENT' ? (
-                                (s.assessment_mode === 'IQRA' || s.mode === 'IQRA' || s.iqraLevel != null || s.iqra_level != null) ? (
-                                  `Iqro' • Jilid ${s.iqraLevel ?? s.iqra_level ?? '-'} • Hal. ${s.iqraPageStart ?? s.iqra_page_start ?? '-'}–${s.iqraPageEnd ?? s.iqra_page_end ?? '-'}`
-                                ) : (s.assessment_mode === 'NURONIYYAH' || s.mode === 'NURONIYYAH' || s.nuroniyyah_dars || s.nuroniyyahDars) ? (
-                                  `Nuroniyyah • ${s.nuroniyyah_dars || s.nuroniyyahDars || 'Ad-Dars'}`
+                                s.assessment_mode === 'NURONIYYAH' || s.nuroniyyah_dars ? (
+                                  `Nuroniyyah • ${s.nuroniyyah_dars || 'Ad-Dars'}`
+                                ) : s.assessment_mode === 'IQRA' || s.iqra_level != null ? (
+                                  `Nuroniyyah • Ad-Dars ${s.iqra_level || 1}`
                                 ) : s.surahName ? (
                                   `${s.surahName} (Ayat ${s.ayahRange})`
                                 ) : (
@@ -316,9 +304,7 @@ export const StudentProgressLookup: React.FC<StudentProgressLookupProps> = ({
                             </td>
                             <td className="py-3 px-4 text-right font-bold text-blue-600">
                               {s.attendance === 'PRESENT' ? (
-                                (s.assessment_mode === 'IQRA' || s.mode === 'IQRA' || s.iqraLevel != null || s.iqra_level != null) ? (
-                                  `+${Number(s.iqraPagesAdded ?? s.iqra_pages_added ?? 0) || 0} halaman`
-                                ) : s.linesAdded != null ? (
+                                s.linesAdded != null ? (
                                   `+${s.linesAdded} baris`
                                 ) : (
                                   '-'
@@ -333,12 +319,12 @@ export const StudentProgressLookup: React.FC<StudentProgressLookupProps> = ({
                     </table>
                   </div>
                 ) : (
-                  <p className="text-xs text-slate-500 italic p-4 text-center bg-slate-50 rounded">Belum ada sesi pembelajaran yang tercatat untuk siswa ini.</p>
+                  <p className="text-xs text-slate-500 italic p-4 text-center bg-slate-50 rounded">Belum ada sesi hafalan yang tercatat untuk siswa ini.</p>
                 )}
               </div>
 
               <div className="text-[11px] text-slate-400 text-center border-t border-slate-100 pt-4">
-                Halaman ini menampilkan progres belajar siswa untuk orang tua/wali. Skor evaluasi internal guru dilindungi.
+                Halaman ini menampilkan progres belajar hafalan siswa untuk orang tua/wali. Skor evaluasi internal guru dilindungi.
               </div>
 
             </div>

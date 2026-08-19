@@ -1,14 +1,16 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { User, AttendanceStatus, EventDay } from '../../types';
+import { User, AttendanceStatus, EventDay, TeacherStudentSummary } from '../../types';
 import { useTeacherWorkspace } from '../../context/TeacherWorkspaceContext';
 import { TeacherSyncBadge } from './TeacherSyncBadge';
 import { ApiService } from '../../services/api';
-import { formatSessionOptionLabel, sortSessionConfigs } from '../../utils/sessionFormatter';
+import { formatSessionOptionLabel, sortSessionConfigs, isFinalEvaluationSession as checkIsFinalEvaluationSession } from '../../utils/sessionFormatter';
+import { formatSkillBadgeText, formatSplitProgressDisplay } from '../../utils/targetUtils';
 import { SessionSummaryCard } from '../common/SessionSummaryCard';
+import { StudentSessionHistoryModal } from './StudentSessionHistoryModal';
 import {
   Users, BookOpen, CheckCircle2, ChevronRight,
   Layers, Check, UserCheck, CheckSquare, Square,
-  Loader2, AlertCircle, Calendar, Clock
+  Loader2, AlertCircle, Calendar, Clock, Eye
 } from 'lucide-react';
 
 interface MyHalaqahProps {
@@ -32,6 +34,7 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
 
   const [selectedSessionId, setSelectedSessionId] = useState<string>('');
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [selectedStudentForHistory, setSelectedStudentForHistory] = useState<TeacherStudentSummary | null>(null);
   const [isSavingBulk, setIsSavingBulk] = useState<boolean>(false);
   const [bulkFeedback, setBulkFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [eventDays, setEventDays] = useState<EventDay[]>(workspace?.eventDays || []);
@@ -78,7 +81,9 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
     return sessionConfigs.find(sc => sc.session_config_id === selectedSessionId) || null;
   }, [sessionConfigs, selectedSessionId]);
 
-  const isFinalEvaluationSession = selectedSessionConfig?.session_type === 'FINAL_EVALUATION';
+  const isFinalEvaluationSession = useMemo(() => {
+    return checkIsFinalEvaluationSession(selectedSessionConfig, sessionConfigs);
+  }, [selectedSessionConfig, sessionConfigs]);
 
   // Assessments for current selected session
   const sessionAssessmentsMap = useMemo(() => {
@@ -88,11 +93,12 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
     workspace.assessments.forEach(a => {
       if (!a.is_deleted && a.session_config_id === selectedSessionId) {
         const hasQuran = a.surah_start != null && a.surah_start !== ('' as any) && a.lines_added != null && a.lines_added !== ('' as any);
-        const hasIqra = a.iqra_level != null && a.iqra_level !== ('' as any) && a.iqra_page_start != null && a.iqra_page_start !== ('' as any);
+        const hasNuroniyyah = (a.assessment_mode === 'NURONIYYAH' || a.nuroniyyah_dars != null) && a.lines_added != null && a.lines_added !== ('' as any);
+        const hasIqra = (a.assessment_mode === 'IQRA' || a.iqra_level != null) && a.iqra_level != null && a.iqra_level !== ('' as any) && a.iqra_page_start != null && a.iqra_page_start !== ('' as any) && a.iqra_page_end != null && a.iqra_page_end !== ('' as any);
         map.set(a.student_id, {
           attendance_status: a.attendance_status,
           assessment_status: a.assessment_status,
-          hasProgress: hasQuran || hasIqra
+          hasProgress: hasQuran || hasNuroniyyah || hasIqra || (a.lines_added != null && Number(a.lines_added) > 0)
         });
       }
     });
@@ -329,7 +335,21 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
             <span>Guru: <strong className="text-white">{halaqah.teacher_name}</strong></span>
             <span>&bull;</span>
             <span>Kapasitas: <strong className="text-white">{students.length}</strong> Siswa</span>
-            {sessionConfigs.some(sc => sc.session_type === 'FINAL_EVALUATION') && (
+            {((halaqah.target_ziyadah_lines != null && halaqah.target_ziyadah_lines > 0) || (halaqah.target_nuroniyyah_lines != null && halaqah.target_nuroniyyah_lines > 0) || (halaqah.target_iqra_pages != null && halaqah.target_iqra_pages > 0)) && (
+              <>
+                <span>&bull;</span>
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-blue-950/80 border border-blue-700/60 text-blue-200 font-semibold text-xs">
+                  <span>Target Kelompok:</span>
+                  <strong className="text-white">
+                    {[
+                      halaqah.target_ziyadah_lines ? `${halaqah.target_ziyadah_lines} Baris Ziyadah` : null,
+                      (halaqah.target_nuroniyyah_lines || halaqah.target_iqra_pages) ? `${halaqah.target_nuroniyyah_lines || halaqah.target_iqra_pages} Baris Nuroniyyah` : null
+                    ].filter(Boolean).join(' • ')}
+                  </strong>
+                </span>
+              </>
+            )}
+            {sessionConfigs.some(sc => checkIsFinalEvaluationSession(sc, sessionConfigs)) && (
               <>
                 <span>&bull;</span>
                 <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-purple-900/60 border border-purple-700 text-purple-200 font-semibold text-xs">
@@ -421,7 +441,7 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
                 >
                   {sessionConfigs.map(sc => (
                     <option key={sc.session_config_id} value={sc.session_config_id}>
-                      {formatSessionOptionLabel(sc, eventDays)}
+                      {formatSessionOptionLabel(sc, eventDays, false, sessionConfigs)}
                     </option>
                   ))}
                 </select>
@@ -450,7 +470,11 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
           {/* Compact Session Summary Context */}
           {selectedSessionConfig && (
             <div className="pt-2 border-t border-slate-200/70">
-              <SessionSummaryCard sessionConfig={selectedSessionConfig} eventDays={eventDays} />
+              <SessionSummaryCard
+                sessionConfig={selectedSessionConfig}
+                eventDays={eventDays}
+                allSessionConfigs={sessionConfigs}
+              />
             </div>
           )}
 
@@ -553,17 +577,31 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
               return (
                 <div
                   key={st.student_id}
-                  className={`rounded-xl border p-3.5 space-y-3 transition shadow-2xs ${
+                  onClick={() => setSelectedStudentForHistory(st)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setSelectedStudentForHistory(st);
+                    }
+                  }}
+                  title="Klik untuk melihat riwayat sesi siswa"
+                  aria-label={`Lihat riwayat sesi untuk ${st.full_name}`}
+                  className={`cursor-pointer rounded-xl border p-3.5 space-y-3 transition shadow-2xs group focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                     isSelected
                       ? 'bg-blue-50/40 border-blue-400 ring-1 ring-blue-400/30'
-                      : 'bg-white border-slate-200 hover:border-slate-300'
+                      : 'bg-white border-slate-200 hover:border-blue-300 hover:shadow-md'
                   }`}
                 >
                   {/* Card Header: Checkbox + Student Name + Class & NIS */}
                   <div className="flex items-start gap-2.5">
                     <button
                       type="button"
-                      onClick={() => handleToggleStudent(st.student_id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleToggleStudent(st.student_id);
+                      }}
                       className="min-w-[44px] min-h-[44px] -ml-2 -mt-1 flex items-center justify-center text-slate-500 hover:text-blue-600 transition shrink-0"
                       aria-label={`Pilih ${st.full_name}`}
                     >
@@ -576,15 +614,21 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
 
                     <div className="flex-1 min-w-0 pt-0.5">
                       <div className="flex items-start justify-between gap-2">
-                        <h4 className="font-bold text-sm text-slate-900 leading-tight">
+                        <h4 className="font-bold text-sm text-slate-900 group-hover:text-blue-700 transition leading-tight">
                           {st.full_name}
                         </h4>
+                        <span className="text-[11px] text-blue-600 font-semibold opacity-80 group-hover:opacity-100 flex items-center gap-0.5 shrink-0">
+                          <span>Riwayat</span>
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </span>
                       </div>
                       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1 text-[11px] text-slate-500 font-medium">
                         <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-semibold">
                           {st.grade_class}
                         </span>
-                        <span>NIS: {st.nis || '-'}</span>
+                        <span className="font-semibold text-slate-600">
+                          {formatSkillBadgeText(st.skill_status_start)}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -658,12 +702,12 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
                   <div className="bg-slate-50/80 rounded-lg p-2.5 border border-slate-100 grid grid-cols-2 gap-2 text-xs">
                     <div>
                       <p className="text-[10px] uppercase font-bold text-slate-400">Target Acara</p>
-                      <p className="font-semibold text-slate-700 mt-0.5">{st.targetText || '-'}</p>
+                      <p className="font-semibold text-slate-700 mt-0.5">{st.targetText || 'Belum ditentukan'}</p>
                     </div>
                     <div>
                       <p className="text-[10px] uppercase font-bold text-slate-400">Progress</p>
                       <p className="font-bold text-blue-600 mt-0.5">
-                        +{st.totalLinesAdded} Baris
+                        {formatSplitProgressDisplay(st)}
                       </p>
                     </div>
                   </div>
@@ -672,7 +716,8 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
                   {isFinalEvaluationSession ? (
                     <button
                       type="button"
-                      onClick={() => {
+                      onClick={(e) => {
+                        e.stopPropagation();
                         if (onNavigateToEvaluation) {
                           onNavigateToEvaluation(st.student_id, selectedSessionConfig?.session_config_id);
                         } else {
@@ -692,7 +737,10 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
                   ) : (
                     <button
                       type="button"
-                      onClick={() => onNavigateToAssessment(st.student_id, selectedSessionConfig?.session_no)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onNavigateToAssessment(st.student_id, selectedSessionConfig?.session_no);
+                      }}
                       className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-bold text-xs rounded-lg transition flex items-center justify-center space-x-2 shadow-xs min-h-[44px]"
                     >
                       <BookOpen className="w-4 h-4" />
@@ -732,7 +780,7 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
                     </button>
                   </div>
                 </th>
-                <th className="py-3 px-4">Nama Siswa & NIS</th>
+                <th className="py-3 px-4">Nama Siswa</th>
                 <th className="py-3 px-4">Kelas</th>
                 <th className="py-3 px-4">Status Presensi</th>
                 <th className="py-3 px-4">Target Acara</th>
@@ -751,16 +799,30 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
                 return (
                   <tr
                     key={st.student_id}
-                    className={`transition-colors ${
-                      isSelected ? 'bg-blue-50/50 hover:bg-blue-50' : 'hover:bg-slate-50'
+                    onClick={() => setSelectedStudentForHistory(st)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSelectedStudentForHistory(st);
+                      }
+                    }}
+                    title="Klik untuk melihat riwayat sesi siswa"
+                    aria-label={`Lihat riwayat sesi untuk ${st.full_name}`}
+                    className={`cursor-pointer transition-colors group focus:outline-none focus:bg-blue-50 ${
+                      isSelected ? 'bg-blue-50/50 hover:bg-blue-100/50' : 'hover:bg-blue-50/40'
                     }`}
                   >
                     {/* Checkbox "PILIH" */}
-                    <td className="py-3 px-4 text-center">
+                    <td className="py-3 px-4 text-center" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-center">
                         <button
                           type="button"
-                          onClick={() => handleToggleStudent(st.student_id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleStudent(st.student_id);
+                          }}
                           className="p-1 text-slate-600 hover:text-blue-600 transition"
                         >
                           {isSelected ? (
@@ -772,10 +834,19 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
                       </div>
                     </td>
 
-                    {/* Student Name & NIS */}
+                    {/* Student Name & Skill */}
                     <td className="py-3 px-4">
-                      <p className="font-bold text-slate-900 text-sm">{st.full_name}</p>
-                      <p className="text-[10px] text-slate-500 font-mono">NIS: {st.nis}</p>
+                      <div className="flex items-center gap-2">
+                        <div>
+                          <p className="font-bold text-slate-900 text-sm group-hover:text-blue-700 transition">
+                            {st.full_name}
+                          </p>
+                          <p className="text-[11px] text-slate-500 font-medium">{formatSkillBadgeText(st.skill_status_start)}</p>
+                        </div>
+                        <span className="opacity-0 group-hover:opacity-100 text-blue-600 transition ml-auto shrink-0" title="Lihat riwayat sesi">
+                          <Eye className="w-4 h-4" />
+                        </span>
+                      </div>
                     </td>
 
                     {/* Class */}
@@ -831,10 +902,10 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
                     </td>
 
                     {/* Target Event */}
-                    <td className="py-3 px-4 font-medium text-slate-700">{st.targetText}</td>
+                    <td className="py-3 px-4 font-medium text-slate-700">{st.targetText || 'Belum ditentukan'}</td>
 
                     {/* Total Lines Added */}
-                    <td className="py-3 px-4 font-bold text-blue-600">+{st.totalLinesAdded} Baris</td>
+                    <td className="py-3 px-4 font-bold text-blue-600">{formatSplitProgressDisplay(st)}</td>
 
                     {/* Target Completion Status */}
                     <td className="py-3 px-4">
@@ -851,11 +922,12 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
                     </td>
 
                     {/* Assessment / Evaluation Action */}
-                    <td className="py-3 px-4 text-right">
+                    <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
                       {isFinalEvaluationSession ? (
                         <button
                           type="button"
-                          onClick={() => {
+                          onClick={(e) => {
+                            e.stopPropagation();
                             if (onNavigateToEvaluation) {
                               onNavigateToEvaluation(st.student_id, selectedSessionConfig?.session_config_id);
                             } else {
@@ -874,7 +946,10 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
                       ) : (
                         <button
                           type="button"
-                          onClick={() => onNavigateToAssessment(st.student_id, selectedSessionConfig?.session_no)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onNavigateToAssessment(st.student_id, selectedSessionConfig?.session_no);
+                          }}
                           className="px-3 py-1.5 bg-slate-100 hover:bg-blue-50 text-blue-700 font-bold text-xs rounded border border-slate-200 transition inline-flex items-center space-x-1 shadow-sm"
                         >
                           <span>Input Sesi</span>
@@ -889,6 +964,21 @@ export const MyHalaqah: React.FC<MyHalaqahProps> = ({ currentUser, onNavigateToA
           </table>
         </div>
       </div>
+
+      {/* Student Session History Modal */}
+      {selectedStudentForHistory && (
+        <StudentSessionHistoryModal
+          student={selectedStudentForHistory}
+          halaqahName={halaqah.group_name || halaqah.halaqah_name || 'Halaqah'}
+          sessionConfigs={workspace?.sessionConfigs || []}
+          assessments={workspace?.assessments || []}
+          finalEvaluations={workspace?.finalEvaluations || []}
+          eventDays={eventDays}
+          onClose={() => setSelectedStudentForHistory(null)}
+          onNavigateToAssessment={onNavigateToAssessment}
+          onNavigateToEvaluation={onNavigateToEvaluation}
+        />
+      )}
 
     </div>
   );

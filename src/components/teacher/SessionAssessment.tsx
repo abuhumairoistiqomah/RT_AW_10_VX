@@ -4,11 +4,12 @@ import { ApiService } from '../../services/api';
 import { useTeacherWorkspace } from '../../context/TeacherWorkspaceContext';
 import { TeacherSyncBadge } from './TeacherSyncBadge';
 import { getSurahByNo, getSurahNameFormatted, validateAyah, formatCurrentProgress } from '../../utils/quran';
-import { formatSessionOptionLabel, sortSessionConfigs } from '../../utils/sessionFormatter';
+import { formatSessionOptionLabel, sortSessionConfigs, isFinalEvaluationSession as checkIsFinalEvaluationSession } from '../../utils/sessionFormatter';
 import { SessionSummaryCard } from '../common/SessionSummaryCard';
+import { Toast } from '../common/Toast';
 import {
   BookOpen, CheckCircle2, Save,
-  AlertCircle, Trash2, ArrowRight, Layers, UserCheck, RefreshCw, Clock, Award
+  AlertCircle, Trash2, ArrowRight, Layers, UserCheck, RefreshCw, Clock, Award, Loader2
 } from 'lucide-react';
 import { SurahAutocomplete } from '../common/SurahAutocomplete';
 
@@ -43,9 +44,13 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [deleting, setDeleting] = useState<boolean>(false);
 
-  // Success / Error messages
+  // Success / Error messages & Floating Toast
   const [successMsg, setSuccessMsg] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string>('');
+  const [toast, setToast] = useState<{ message: string; detail?: string; type: 'success' | 'error' } | null>(null);
+
+  // Ref to form top for smooth scrolling after save
+  const formTopRef = useRef<HTMLDivElement>(null);
 
   // Selected State
   const [selectedStudentId, setSelectedStudentId] = useState<string>(initialStudentId || '');
@@ -57,15 +62,21 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
 
   // Form Fields
   const [attendance, setAttendance] = useState<'UNASSESSED' | 'PRESENT' | 'SICK' | 'PERMISSION' | 'ABSENT'>('UNASSESSED');
-  const [assessmentMode, setAssessmentMode] = useState<'ZIYADAH' | 'IQRA'>('ZIYADAH');
+  const [assessmentMode, setAssessmentMode] = useState<'ZIYADAH' | 'NURONIYYAH' | 'IQRA'>('ZIYADAH');
   const [startSurah, setStartSurah] = useState<number | undefined>(undefined);
   const [startAyah, setStartAyah] = useState<string>('');
   const [endSurah, setEndSurah] = useState<number | undefined>(undefined);
   const [endAyah, setEndAyah] = useState<string>('');
   const [linesAdded, setLinesAdded] = useState<string>('');
+  const [nuroniyyahDars, setNuroniyyahDars] = useState<string>('');
   const [iqraLevel, setIqraLevel] = useState<number | undefined>(undefined);
   const [iqraPageStart, setIqraPageStart] = useState<string>('');
   const [iqraPageEnd, setIqraPageEnd] = useState<string>('');
+  const iqraPagesAdded = useMemo(() => {
+    const start = Number(iqraPageStart);
+    const end = Number(iqraPageEnd);
+    return Number.isFinite(start) && Number.isFinite(end) && start > 0 && end >= start ? end - start + 1 : 0;
+  }, [iqraPageStart, iqraPageEnd]);
   const [notes, setNotes] = useState<string>('');
 
   // Edit Mode Tracker
@@ -168,12 +179,8 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
   }, [availableSessionConfigs, selectedSessionConfigId]);
 
   const isFinalEvaluationSession = useMemo(() => {
-    if (!selectedSessionConfig) return false;
-    if (selectedSessionConfig.session_type === 'FINAL_EVALUATION') return true;
-    // Temporary backward-compatible fallback only if session_type is missing
-    if (!selectedSessionConfig.session_type && selectedSessionConfig.session_no === 5) return true;
-    return false;
-  }, [selectedSessionConfig]);
+    return checkIsFinalEvaluationSession(selectedSessionConfig, availableSessionConfigs);
+  }, [selectedSessionConfig, availableSessionConfigs]);
 
   const [savingPresensi, setSavingPresensi] = useState<boolean>(false);
 
@@ -186,20 +193,33 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
     return `draft/${userId}/${eventId}/${studentId}/${sessionCfgId}`;
   }, [currentUser, workspace?.event?.event_id, selectedStudentId, selectedSessionConfigId]);
 
-  // Mode change handler: clears fields of other mode
-  const handleModeChange = (newMode: 'ZIYADAH' | 'IQRA') => {
+  // Mode change handler: each mode owns its own progress fields.
+  const handleModeChange = (newMode: 'ZIYADAH' | 'NURONIYYAH' | 'IQRA') => {
     if (newMode === assessmentMode) return;
     setAssessmentMode(newMode);
-    if (newMode === 'IQRA') {
-      setStartSurah(undefined);
-      setStartAyah('');
-      setEndSurah(undefined);
-      setEndAyah('');
-      setLinesAdded('');
-    } else {
+
+    if (newMode === 'ZIYADAH') {
+      setNuroniyyahDars('');
       setIqraLevel(undefined);
       setIqraPageStart('');
       setIqraPageEnd('');
+      setLinesAdded('');
+      return;
+    }
+
+    setStartSurah(undefined);
+    setStartAyah('');
+    setEndSurah(undefined);
+    setEndAyah('');
+
+    if (newMode === 'NURONIYYAH') {
+      setIqraLevel(undefined);
+      setIqraPageStart('');
+      setIqraPageEnd('');
+      setLinesAdded('');
+    } else {
+      setNuroniyyahDars('');
+      setLinesAdded('');
     }
   };
 
@@ -222,27 +242,41 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
       setExistingAssessmentId(existing.assessment_id);
       setAttendance(existing.attendance_status || 'PRESENT');
 
-      // Do NOT override assessment_mode when editing an existing assessment
-      const existingMode = existing.assessment_mode || (existing.iqra_level != null || existing.iqra_page_start != null ? 'IQRA' : 'ZIYADAH');
+      const existingMode: 'ZIYADAH' | 'NURONIYYAH' | 'IQRA' =
+        existing.assessment_mode === 'IQRA' || existing.iqra_level != null || existing.iqra_page_start != null || existing.iqra_page_end != null
+          ? 'IQRA'
+          : (existing.assessment_mode === 'NURONIYYAH' || existing.nuroniyyah_dars)
+            ? 'NURONIYYAH'
+            : 'ZIYADAH';
       setAssessmentMode(existingMode);
 
-      if (existingMode === 'IQRA') {
-        setIqraLevel(existing.iqra_level != null ? Number(existing.iqra_level) : undefined);
-        setIqraPageStart(existing.iqra_page_start != null ? String(existing.iqra_page_start) : '');
-        setIqraPageEnd(existing.iqra_page_end != null ? String(existing.iqra_page_end) : '');
-        // Clear Quran fields
+      if (existingMode === 'NURONIYYAH') {
+        setNuroniyyahDars(existing.nuroniyyah_dars || '');
+        setLinesAdded(existing.lines_added != null ? String(existing.lines_added) : '');
         setStartSurah(undefined);
         setStartAyah('');
         setEndSurah(undefined);
         setEndAyah('');
+        setIqraLevel(undefined);
+        setIqraPageStart('');
+        setIqraPageEnd('');
+      } else if (existingMode === 'IQRA') {
+        setNuroniyyahDars('');
         setLinesAdded('');
+        setStartSurah(undefined);
+        setStartAyah('');
+        setEndSurah(undefined);
+        setEndAyah('');
+        setIqraLevel(existing.iqra_level != null ? Number(existing.iqra_level) : undefined);
+        setIqraPageStart(existing.iqra_page_start != null ? String(existing.iqra_page_start) : '');
+        setIqraPageEnd(existing.iqra_page_end != null ? String(existing.iqra_page_end) : '');
       } else {
         setStartSurah(existing.surah_start);
         setStartAyah(existing.ayah_start ? String(existing.ayah_start) : '');
         setEndSurah(existing.surah_end);
         setEndAyah(existing.ayah_end ? String(existing.ayah_end) : '');
         setLinesAdded(existing.lines_added != null ? String(existing.lines_added) : '');
-        // Clear Iqra fields
+        setNuroniyyahDars('');
         setIqraLevel(undefined);
         setIqraPageStart('');
         setIqraPageEnd('');
@@ -260,23 +294,38 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
     ApiService.getDraftLocal(draftKey).then(draft => {
       if (draft) {
         setAttendance(draft.attendance || 'UNASSESSED');
-        const draftMode = draft.assessmentMode || (selectedStudent?.skill_status_start === 'NON_BBL' ? 'IQRA' : 'ZIYADAH');
+        const draftMode: 'ZIYADAH' | 'NURONIYYAH' | 'IQRA' =
+          draft.assessmentMode === 'IQRA' ? 'IQRA'
+            : draft.assessmentMode === 'NURONIYYAH' ? 'NURONIYYAH'
+              : (draft.assessmentMode || (selectedStudent?.skill_status_start === 'NON_BBL' ? 'NURONIYYAH' : 'ZIYADAH'));
         setAssessmentMode(draftMode);
-        if (draftMode === 'IQRA') {
-          setIqraLevel(draft.iqraLevel);
-          setIqraPageStart(draft.iqraPageStart || '');
-          setIqraPageEnd(draft.iqraPageEnd || '');
+        if (draftMode === 'NURONIYYAH') {
+          setNuroniyyahDars(draft.nuroniyyahDars || '');
+          setLinesAdded(draft.linesAdded || '');
           setStartSurah(undefined);
           setStartAyah('');
           setEndSurah(undefined);
           setEndAyah('');
+          setIqraLevel(undefined);
+          setIqraPageStart('');
+          setIqraPageEnd('');
+        } else if (draftMode === 'IQRA') {
+          setNuroniyyahDars('');
           setLinesAdded('');
+          setStartSurah(undefined);
+          setStartAyah('');
+          setEndSurah(undefined);
+          setEndAyah('');
+          setIqraLevel(draft.iqraLevel != null ? Number(draft.iqraLevel) : undefined);
+          setIqraPageStart(draft.iqraPageStart != null ? String(draft.iqraPageStart) : '');
+          setIqraPageEnd(draft.iqraPageEnd != null ? String(draft.iqraPageEnd) : '');
         } else {
           setStartSurah(draft.startSurah);
           setStartAyah(draft.startAyah || '');
           setEndSurah(draft.endSurah);
           setEndAyah(draft.endAyah || '');
           setLinesAdded(draft.linesAdded || '');
+          setNuroniyyahDars('');
           setIqraLevel(undefined);
           setIqraPageStart('');
           setIqraPageEnd('');
@@ -289,8 +338,8 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
       setAttendance('UNASSESSED');
       setNotes('');
 
-      // New assessment default: NON_BBL -> 'IQRA', else 'ZIYADAH'
-      const defaultMode = selectedStudent?.skill_status_start === 'NON_BBL' ? 'IQRA' : 'ZIYADAH';
+      // New assessment default: NON_BBL -> 'NURONIYYAH', else 'ZIYADAH'
+      const defaultMode = selectedStudent?.skill_status_start === 'NON_BBL' ? 'NURONIYYAH' : 'ZIYADAH';
       setAssessmentMode(defaultMode);
 
       // Smart start suggestion from previous session assessment or baseline
@@ -302,24 +351,23 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
         a.attendance_status === 'PRESENT'
       );
 
-      if (defaultMode === 'IQRA') {
+      if (defaultMode === 'NURONIYYAH') {
         setStartSurah(undefined);
         setStartAyah('');
         setEndSurah(undefined);
         setEndAyah('');
         setLinesAdded('');
 
-        if (prevAssessment && (prevAssessment.assessment_mode === 'IQRA' || prevAssessment.iqra_level != null)) {
-          setIqraLevel(prevAssessment.iqra_level);
-          const nextStartPage = prevAssessment.iqra_page_end ? prevAssessment.iqra_page_end + 1 : (prevAssessment.iqra_page_start ? prevAssessment.iqra_page_start + 1 : 1);
-          setIqraPageStart(String(nextStartPage));
-          setIqraPageEnd('');
+        if (prevAssessment && (prevAssessment.assessment_mode === 'NURONIYYAH' || prevAssessment.nuroniyyah_dars)) {
+          setNuroniyyahDars(prevAssessment.nuroniyyah_dars || '');
         } else {
-          setIqraLevel(undefined);
-          setIqraPageStart('');
-          setIqraPageEnd('');
+          setNuroniyyahDars('Ad-Dars 1');
         }
+        setIqraLevel(undefined);
+        setIqraPageStart('');
+        setIqraPageEnd('');
       } else {
+        setNuroniyyahDars('');
         setIqraLevel(undefined);
         setIqraPageStart('');
         setIqraPageEnd('');
@@ -369,18 +417,19 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
     const draftData = {
       attendance,
       assessmentMode,
+      nuroniyyahDars: assessmentMode === 'NURONIYYAH' ? nuroniyyahDars : '',
+      iqraLevel: assessmentMode === 'IQRA' ? iqraLevel : undefined,
+      iqraPageStart: assessmentMode === 'IQRA' ? iqraPageStart : '',
+      iqraPageEnd: assessmentMode === 'IQRA' ? iqraPageEnd : '',
       startSurah: assessmentMode === 'ZIYADAH' ? startSurah : undefined,
       startAyah: assessmentMode === 'ZIYADAH' ? startAyah : '',
       endSurah: assessmentMode === 'ZIYADAH' ? endSurah : undefined,
       endAyah: assessmentMode === 'ZIYADAH' ? endAyah : '',
-      linesAdded: assessmentMode === 'ZIYADAH' ? linesAdded : '',
-      iqraLevel: assessmentMode === 'IQRA' ? iqraLevel : undefined,
-      iqraPageStart: assessmentMode === 'IQRA' ? iqraPageStart : '',
-      iqraPageEnd: assessmentMode === 'IQRA' ? iqraPageEnd : '',
+      linesAdded: assessmentMode === 'IQRA' ? '' : linesAdded,
       notes
     };
     ApiService.saveDraftLocal(draftKey, draftData);
-  }, [attendance, assessmentMode, startSurah, startAyah, endSurah, endAyah, linesAdded, iqraLevel, iqraPageStart, iqraPageEnd, notes, selectedStudentId, selectedSessionConfig, existingAssessmentId, getDraftKey]);
+  }, [attendance, assessmentMode, startSurah, startAyah, endSurah, endAyah, linesAdded, nuroniyyahDars, iqraLevel, iqraPageStart, iqraPageEnd, notes, selectedStudentId, selectedSessionConfig, existingAssessmentId, getDraftKey]);
 
   // Student progress statistics calculation
   const studentStats = useMemo(() => {
@@ -393,7 +442,6 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
     );
 
     const totalLines = studentAssessments
-      .filter(a => a.assessment_mode !== 'IQRA' && !a.iqra_level)
       .reduce((sum, a) => sum + (a.lines_added || 0), 0);
 
     const sorted = studentAssessments.slice().sort((a, b) => b.session_no - a.session_no);
@@ -418,7 +466,7 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
       return 'Pilih status kehadiran siswa terlebih dahulu.';
     }
 
-    // If final evaluation session, Ziyadah / Iqra fields are not required
+    // If final evaluation session, learning progress fields are not required
     if (isFinalEvaluationSession) {
       return null;
     }
@@ -446,18 +494,25 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
         if (!vEnd.valid) {
           return `Ayat akhir tidak valid: ${vEnd.message}`;
         }
+        if (linesAdded === '' || Number(linesAdded) < 0) {
+          return 'Jumlah penambahan baris setoran baru wajib diisi (minimal 0).';
+        }
+      } else if (assessmentMode === 'NURONIYYAH') {
+        if (!nuroniyyahDars || !nuroniyyahDars.trim()) {
+          return 'Ad-Dars Nuroniyyah (1–17) wajib dipilih atau diisi.';
+        }
+        if (linesAdded === '' || Number(linesAdded) < 0) {
+          return 'Jumlah penambahan baris Nuroniyyah wajib diisi (minimal 0).';
+        }
       } else if (assessmentMode === 'IQRA') {
-        if (!iqraLevel) {
-          return 'Iqra Jilid (1–6) wajib dipilih.';
+        if (iqraLevel == null || iqraLevel < 1 || iqraLevel > 6) {
+          return "Jilid Iqro' wajib dipilih (1–6).";
         }
         if (!iqraPageStart || Number(iqraPageStart) < 1) {
-          return 'Halaman awal Iqra harus angka positif.';
+          return "Halaman awal Iqro' wajib diisi dengan angka positif.";
         }
-        if (!iqraPageEnd || Number(iqraPageEnd) < 1) {
-          return 'Halaman akhir Iqra harus angka positif.';
-        }
-        if (Number(iqraPageEnd) < Number(iqraPageStart)) {
-          return 'Halaman akhir tidak boleh lebih kecil dari halaman awal.';
+        if (!iqraPageEnd || Number(iqraPageEnd) < Number(iqraPageStart)) {
+          return "Halaman akhir Iqro' harus sama atau lebih besar dari halaman awal.";
         }
       }
     }
@@ -473,6 +528,11 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
     const valErr = validateForm();
     if (valErr) {
       setErrorMsg(valErr);
+      setToast({
+        type: 'error',
+        message: 'Validasi form tidak lengkap',
+        detail: valErr
+      });
       return;
     }
 
@@ -482,6 +542,7 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
 
       const isPresent = attendance === 'PRESENT';
       const isZiyadah = !isFinalEvaluationSession && isPresent && assessmentMode === 'ZIYADAH';
+      const isNuroniyyah = !isFinalEvaluationSession && isPresent && assessmentMode === 'NURONIYYAH';
       const isIqra = !isFinalEvaluationSession && isPresent && assessmentMode === 'IQRA';
 
       const payload = {
@@ -495,41 +556,93 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
         start_ayah: isZiyadah ? Number(startAyah) : undefined,
         end_surah: isZiyadah ? Number(endSurah) : undefined,
         end_ayah: isZiyadah ? Number(endAyah) : undefined,
-        lines_added: isZiyadah && linesAdded !== '' ? Number(linesAdded) : 0,
-        iqra_level: isIqra ? Number(iqraLevel) : undefined,
+        lines_added: (isZiyadah || isNuroniyyah) && linesAdded !== '' ? Number(linesAdded) : undefined,
+        nuroniyyah_dars: isNuroniyyah ? nuroniyyahDars : undefined,
+        iqra_level: isIqra ? iqraLevel : undefined,
         iqra_page_start: isIqra ? Number(iqraPageStart) : undefined,
         iqra_page_end: isIqra ? Number(iqraPageEnd) : undefined,
+        iqra_pages_added: isIqra ? iqraPagesAdded : undefined,
         notes: notes,
         teacher_id: teacherIdToUse
       };
 
-      // Optimistic update in memory and pending sync queue
-      saveAssessmentOptimistic(payload);
+      // Optimistic update in memory and background sync queue
+      const saveResult = await saveAssessmentOptimistic(payload);
+      if (saveResult && saveResult.success === false) {
+        throw new Error(saveResult.error || 'Gagal menyimpan penilaian sesi.');
+      }
 
       // Clear draft after success
       const draftKey = getDraftKey();
       await ApiService.clearDraftLocal(draftKey);
 
-      setSuccessMsg(`Penilaian sesi #${selectedSessionConfig?.session_no} untuk ${selectedStudent?.full_name || 'siswa'} berhasil disimpan!`);
+      const studentName = selectedStudent?.full_name || 'siswa';
+      const sessionNo = selectedSessionConfig?.session_no;
 
-      // Handle nextAction instantly
+      // Handle nextAction & set messages
       if (nextAction === 'NEXT_STUDENT') {
         const currentIdx = students.findIndex(s => s.student_id === selectedStudentId);
         if (currentIdx >= 0 && currentIdx < students.length - 1) {
-          setSelectedStudentId(students[currentIdx + 1].student_id);
+          const nextStudent = students[currentIdx + 1];
+          setSelectedStudentId(nextStudent.student_id);
+          setSuccessMsg(`✓ Data penilaian ${studentName} berhasil disimpan. Beralih ke: ${nextStudent.full_name}`);
+          setToast({
+            type: 'success',
+            message: '✓ Data berhasil disimpan.',
+            detail: `Penilaian sesi #${sessionNo} untuk ${studentName} tersimpan. Menampilkan formulir: ${nextStudent.full_name}`
+          });
         } else {
-          setSuccessMsg('Penilaian disimpan! Ini adalah siswa terakhir dalam halaqah.');
+          setSuccessMsg(`✓ Data penilaian sesi #${sessionNo} untuk ${studentName} berhasil disimpan! (Siswa terakhir dalam halaqah ini)`);
+          setToast({
+            type: 'success',
+            message: '✓ Data berhasil disimpan.',
+            detail: `Penilaian sesi #${sessionNo} untuk ${studentName} tersimpan (Semua siswa dalam halaqah telah diinput).`
+          });
         }
       } else if (nextAction === 'NEXT_SESSION') {
         const currentConfigIdx = availableSessionConfigs.findIndex(sc => sc.session_config_id === selectedSessionConfigId);
         if (currentConfigIdx >= 0 && currentConfigIdx < availableSessionConfigs.length - 1) {
-          setSelectedSessionConfigId(availableSessionConfigs[currentConfigIdx + 1].session_config_id);
+          const nextConfig = availableSessionConfigs[currentConfigIdx + 1];
+          setSelectedSessionConfigId(nextConfig.session_config_id);
+          setSuccessMsg(`✓ Data penilaian ${studentName} berhasil disimpan. Beralih ke: Sesi #${nextConfig.session_no}`);
+          setToast({
+            type: 'success',
+            message: '✓ Data berhasil disimpan.',
+            detail: `Penilaian sesi #${sessionNo} untuk ${studentName} tersimpan. Menampilkan formulir Sesi #${nextConfig.session_no}.`
+          });
         } else {
-          setSuccessMsg('Penilaian disimpan! Ini adalah sesi terakhir dalam kelompok.');
+          setSuccessMsg(`✓ Data penilaian sesi #${sessionNo} untuk ${studentName} berhasil disimpan! (Sesi terakhir dalam kegiatan)`);
+          setToast({
+            type: 'success',
+            message: '✓ Data berhasil disimpan.',
+            detail: `Penilaian sesi #${sessionNo} untuk ${studentName} berhasil disimpan.`
+          });
         }
+      } else {
+        setSuccessMsg(`✓ Penilaian sesi #${sessionNo} untuk ${studentName} berhasil disimpan!`);
+        setToast({
+          type: 'success',
+          message: '✓ Data berhasil disimpan.',
+          detail: `Penilaian sesi #${sessionNo} untuk ${studentName} berhasil disimpan dan disinkronkan.`
+        });
       }
+
+      // Smooth scroll to top of assessment form
+      setTimeout(() => {
+        formTopRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start'
+        });
+      }, 60);
+
     } catch (err: any) {
-      setErrorMsg('Gagal menyimpan penilaian sesi: ' + (err.message || ''));
+      setErrorMsg('Gagal menyimpan penilaian: ' + (err.message || 'Silakan coba lagi.'));
+      setToast({
+        type: 'error',
+        message: 'Gagal menyimpan data.',
+        detail: err.message || 'Terjadi kesalahan saat menyimpan data penilaian.'
+      });
+      // Do NOT scroll away on error - preserve form values and teacher position
     } finally {
       setSubmitting(false);
     }
@@ -556,13 +669,14 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
       // Reset form
       setExistingAssessmentId(null);
       setAttendance('UNASSESSED');
-      const defaultMode = selectedStudent?.skill_status_start === 'NON_BBL' ? 'IQRA' : 'ZIYADAH';
+      const defaultMode = selectedStudent?.skill_status_start === 'NON_BBL' ? 'NURONIYYAH' : 'ZIYADAH';
       setAssessmentMode(defaultMode);
       setStartSurah(undefined);
       setStartAyah('');
       setEndSurah(undefined);
       setEndAyah('');
       setLinesAdded('');
+      setNuroniyyahDars('');
       setIqraLevel(undefined);
       setIqraPageStart('');
       setIqraPageEnd('');
@@ -606,6 +720,8 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
         iqra_level: undefined,
         iqra_page_start: undefined,
         iqra_page_end: undefined,
+        iqra_pages_added: undefined,
+        nuroniyyah_dars: undefined,
         notes: notes,
         teacher_id: teacherIdToUse
       };
@@ -718,7 +834,16 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
   }
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8 space-y-6 animate-in fade-in">
+    <div className="max-w-4xl mx-auto px-4 py-8 space-y-6 animate-in fade-in relative">
+      {/* Floating Save Toast Notification */}
+      {toast && (
+        <Toast
+          message={toast.message}
+          detail={toast.detail}
+          type={toast.type}
+          onClose={() => setToast(null)}
+        />
+      )}
       
       {/* Top Sync & Action Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -781,70 +906,73 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
         </div>
       </div>
 
-      {/* Visual Success & Error Alerts */}
-      {successMsg && (
-        <div className="p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded font-semibold text-xs flex items-center space-x-2 border-l-4 border-l-emerald-500">
-          <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-          <span>{successMsg}</span>
-        </div>
-      )}
+      {/* Form Top Anchor for Smooth Scrolling & Student Context */}
+      <div ref={formTopRef} className="scroll-mt-6 space-y-4">
+        {/* Visual Success & Error Alerts */}
+        {successMsg && (
+          <div className="p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded font-semibold text-xs flex items-center space-x-2 border-l-4 border-l-emerald-500">
+            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+            <span>{successMsg}</span>
+          </div>
+        )}
 
-      {errorMsg && (
-        <div className="p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded font-semibold text-xs flex items-center space-x-2 border-l-4 border-l-rose-500">
-          <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
-          <span>{errorMsg}</span>
-        </div>
-      )}
+        {errorMsg && (
+          <div className="p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded font-semibold text-xs flex items-center space-x-2 border-l-4 border-l-rose-500">
+            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
+            <span>{errorMsg}</span>
+          </div>
+        )}
 
-      {/* Student Context Card */}
-      {selectedStudent && (
-        <div className="bg-white p-5 rounded border border-slate-200 shadow-sm space-y-3">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-            <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600 bg-blue-50 px-2 py-0.5 rounded border border-blue-100">
-                Informasi Siswa
-              </span>
-              <h3 className="text-base font-bold text-slate-900 mt-1">
-                {selectedStudent.full_name} <span className="text-xs font-normal text-slate-500">(NIS: {selectedStudent.nis || 'Belum tersedia'})</span>
-              </h3>
+        {/* Student Context Card */}
+        {selectedStudent && (
+          <div className="bg-white p-5 rounded border border-slate-200 shadow-sm space-y-3">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600 bg-blue-50 px-2 py-0.5 rounded border border-blue-100">
+                  Informasi Siswa
+                </span>
+                <h3 className="text-base font-bold text-slate-900 mt-1">
+                  {selectedStudent.full_name} <span className="text-xs font-normal text-slate-500">(NIS: {selectedStudent.nis || 'Belum tersedia'})</span>
+                </h3>
+              </div>
+              <div className="text-right">
+                <span className="text-xs font-bold text-slate-700 block">Kelas</span>
+                <span className="text-xs font-semibold text-slate-500">{selectedStudent.grade_class || 'Belum tersedia'}</span>
+              </div>
             </div>
-            <div className="text-right">
-              <span className="text-xs font-bold text-slate-700 block">Kelas</span>
-              <span className="text-xs font-semibold text-slate-500">{selectedStudent.grade_class || 'Belum tersedia'}</span>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs pt-1">
+              <div className="p-2.5 bg-slate-50 rounded border border-slate-200/80">
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Status Kemampuan Awal</span>
+                <span className="font-bold text-slate-800">
+                  {selectedStudent?.skill_status_start === 'NON_BBL' ? 'NON-BBL' : selectedStudent?.skill_status_start === 'BBL' ? 'BBL' : selectedStudent?.skill_status_start === 'BBLS' ? 'BBLS' : 'Belum diisi'}
+                </span>
+              </div>
+
+              <div className="p-2.5 bg-slate-50 rounded border border-slate-200/80">
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Baseline Awal</span>
+                <span className="font-bold text-slate-800">
+                  {selectedStudent?.baseline_surah ? `${getSurahNameFormatted(selectedStudent.baseline_surah)} : Ayat ${selectedStudent.baseline_ayah || 1}` : 'Belum tersedia'}
+                </span>
+              </div>
+
+              <div className="p-2.5 bg-slate-50 rounded border border-slate-200/80">
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Target Kegiatan</span>
+                <span className="font-bold text-slate-800">
+                  {selectedStudent?.targetText || (selectedStudent?.target_lines ? `${selectedStudent.target_lines} Baris` : 'Belum tersedia')}
+                </span>
+              </div>
+
+              <div className="p-2.5 bg-blue-50/60 rounded border border-blue-100">
+                <span className="text-[10px] uppercase font-bold text-blue-600 block mb-0.5">Progres Saat Ini</span>
+                <span className="font-bold text-blue-900">
+                  {formatCurrentProgress(studentStats.latestSetoran)}
+                </span>
+              </div>
             </div>
           </div>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs pt-1">
-            <div className="p-2.5 bg-slate-50 rounded border border-slate-200/80">
-              <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Status Kemampuan Awal</span>
-              <span className="font-bold text-slate-800">
-                {selectedStudent?.skill_status_start === 'NON_BBL' ? 'NON-BBL' : selectedStudent?.skill_status_start === 'BBL' ? 'BBL' : selectedStudent?.skill_status_start === 'BBLS' ? 'BBLS' : 'Belum tersedia'}
-              </span>
-            </div>
-
-            <div className="p-2.5 bg-slate-50 rounded border border-slate-200/80">
-              <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Baseline Awal</span>
-              <span className="font-bold text-slate-800">
-                {selectedStudent?.baseline_surah ? `${getSurahNameFormatted(selectedStudent.baseline_surah)} : Ayat ${selectedStudent.baseline_ayah || 1}` : 'Belum tersedia'}
-              </span>
-            </div>
-
-            <div className="p-2.5 bg-slate-50 rounded border border-slate-200/80">
-              <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Target Kegiatan</span>
-              <span className="font-bold text-slate-800">
-                {selectedStudent?.targetText || (selectedStudent?.target_lines ? `${selectedStudent.target_lines} Baris` : 'Belum tersedia')}
-              </span>
-            </div>
-
-            <div className="p-2.5 bg-blue-50/60 rounded border border-blue-100">
-              <span className="text-[10px] uppercase font-bold text-blue-600 block mb-0.5">Progres Saat Ini</span>
-              <span className="font-bold text-blue-900">
-                {formatCurrentProgress(studentStats.latestSetoran)}
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Main Form */}
       <div className="bg-white p-6 md:p-8 rounded border border-slate-200 shadow-sm space-y-6">
@@ -900,7 +1028,7 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
               ) : (
                 availableSessionConfigs.map(sc => (
                   <option key={sc.session_config_id} value={sc.session_config_id}>
-                    {formatSessionOptionLabel(sc, eventDays)}
+                    {formatSessionOptionLabel(sc, eventDays, false, availableSessionConfigs)}
                   </option>
                 ))
               )}
@@ -909,7 +1037,11 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
             {/* Compact Session Summary Context */}
             {selectedSessionConfig && (
               <div className="mt-2.5">
-                <SessionSummaryCard sessionConfig={selectedSessionConfig} eventDays={eventDays} />
+                <SessionSummaryCard
+                  sessionConfig={selectedSessionConfig}
+                  eventDays={eventDays}
+                  allSessionConfigs={availableSessionConfigs}
+                />
               </div>
             )}
           </div>
@@ -1047,7 +1179,7 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
                     rows={2}
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
-                    placeholder="Catatan kehadiran santri pada sesi evaluasi akhir..."
+                    placeholder="Catatan kehadiran siswa pada sesi evaluasi akhir..."
                     className="w-full px-3 py-2 bg-white border border-purple-200 rounded-lg text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500"
                   ></textarea>
                 </div>
@@ -1064,7 +1196,7 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
                       Siswa tidak mengikuti sesi evaluasi akhir ({attendance === 'SICK' ? 'Sakit' : attendance === 'PERMISSION' ? 'Izin' : 'Alpa'}).
                     </h4>
                     <p className="text-[11px] text-slate-500 mt-0.5">
-                      Data evaluasi akhir tidak dibuat secara otomatis. Simpan presensi untuk mencatat ketidakhadiran santri pada sesi ini.
+                      Data evaluasi akhir tidak dibuat secara otomatis. Simpan presensi untuk mencatat ketidakhadiran siswa pada sesi ini.
                     </p>
                   </div>
                 </div>
@@ -1092,7 +1224,7 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-2">
               Mode Pembelajaran
             </label>
-            <div className="grid grid-cols-2 gap-2 max-w-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 max-w-lg">
               <button
                 type="button"
                 onClick={() => handleModeChange('ZIYADAH')}
@@ -1102,7 +1234,18 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
                     : 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
                 }`}
               >
-                Ziyadah
+                Hafalan Al-Qur&apos;an
+              </button>
+              <button
+                type="button"
+                onClick={() => handleModeChange('NURONIYYAH')}
+                className={`py-2.5 px-4 text-xs font-bold rounded transition border text-center ${
+                  assessmentMode === 'NURONIYYAH'
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                    : 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
+                }`}
+              >
+                Nuroniyyah
               </button>
               <button
                 type="button"
@@ -1113,18 +1256,18 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
                     : 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
                 }`}
               >
-                Iqra
+                Iqro&apos;
               </button>
             </div>
           </div>
         )}
 
-        {/* Setoran Hafalan / Pembelajaran Iqra Fields (ONLY for HADIR and NOT Final Evaluation) */}
+        {/* Detail pembelajaran sesuai mode (ONLY for HADIR and NOT Final Evaluation) */}
         {!isFinalEvaluationSession && attendance === 'PRESENT' && (
           <div className="space-y-5 pt-2 border-t border-slate-100 animate-in fade-in">
             <h4 className="font-bold text-xs uppercase text-slate-700 tracking-wider flex items-center space-x-1.5">
               <Layers className="w-4 h-4 text-blue-600" />
-              <span>{assessmentMode === 'ZIYADAH' ? 'Detail Setoran Hafalan' : 'Detail Pembelajaran Iqra'}</span>
+              <span>{assessmentMode === 'ZIYADAH' ? 'Detail Setoran Hafalan Al-Qur\'an' : assessmentMode === 'NURONIYYAH' ? 'Detail Pembelajaran Nuroniyyah' : "Detail Pembelajaran Iqro'"}</span>
             </h4>
             
             {/* ZIYADAH MODE */}
@@ -1199,59 +1342,122 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
               </>
             )}
 
-            {/* IQRA MODE */}
-            {assessmentMode === 'IQRA' && (
+            {/* NURONIYYAH MODE */}
+            {assessmentMode === 'NURONIYYAH' && (
               <div className="space-y-4 p-4 bg-slate-50 border border-slate-200 rounded-lg">
-                {/* Iqra Jilid 1-6 */}
+                {/* 17 Ad-Dars Selector */}
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
-                    Iqra Jilid
+                    Ad-Dars Nuroniyyah (1–17)
                   </label>
-                  <div className="grid grid-cols-6 gap-2">
-                    {[1, 2, 3, 4, 5, 6].map((lvl) => (
+                  <div className="grid grid-cols-3 sm:grid-cols-6 md:grid-cols-9 gap-1.5">
+                    {Array.from({ length: 17 }, (_, i) => `Ad-Dars ${i + 1}`).map((dars) => (
                       <button
                         type="button"
-                        key={lvl}
-                        onClick={() => setIqraLevel(lvl)}
-                        className={`py-2 px-2 text-xs font-bold rounded transition border text-center ${
-                          iqraLevel === lvl
+                        key={dars}
+                        onClick={() => setNuroniyyahDars(dars)}
+                        className={`py-2 px-1 text-[11px] font-bold rounded transition border text-center truncate ${
+                          nuroniyyahDars === dars
                             ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
                             : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
                         }`}
                       >
-                        {lvl}
+                        {dars}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-2">
+                    <input
+                      type="text"
+                      value={nuroniyyahDars}
+                      onChange={(e) => setNuroniyyahDars(e.target.value)}
+                      placeholder="Pilih nomor Ad-Dars di atas atau ketik di sini (mis: Ad-Dars 1)"
+                      className="w-full px-3 py-2 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+
+                {/* Total Lines Added for Nuroniyyah */}
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 bg-blue-50/60 border border-blue-200 rounded-lg gap-3">
+                  <div>
+                    <span className="text-xs font-bold text-blue-900 block">Penambahan Baris Belajar Baru</span>
+                    <p className="text-[11px] text-blue-700">Jumlah baris Nuroniyyah tuntas dipelajari pada sesi ini</p>
+                  </div>
+                  <div className="flex items-center space-x-2 shrink-0">
+                    <input
+                      type="number"
+                      min={0}
+                      value={linesAdded}
+                      onChange={(e) => setLinesAdded(e.target.value)}
+                      placeholder="0"
+                      className="w-24 px-3 py-1.5 bg-white border border-blue-300 font-bold text-sm text-blue-900 text-center rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <span className="text-xs font-bold text-blue-900">Baris</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* IQRO MODE */}
+            {assessmentMode === 'IQRA' && (
+              <div className="space-y-4 p-4 bg-slate-50 border border-slate-200 rounded-lg">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
+                    Jilid Iqro&apos;
+                  </label>
+                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+                    {Array.from({ length: 6 }, (_, i) => i + 1).map((level) => (
+                      <button
+                        type="button"
+                        key={level}
+                        onClick={() => setIqraLevel(level)}
+                        className={`py-2 px-2 text-[11px] font-bold rounded transition border text-center ${
+                          iqraLevel === level
+                            ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                            : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                        }`}
+                      >
+                        Jilid {level}
                       </button>
                     ))}
                   </div>
                 </div>
 
-                {/* Halaman Awal & Akhir */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                      Halaman Awal
-                    </label>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Halaman Awal</label>
                     <input
                       type="number"
                       min={1}
                       value={iqraPageStart}
                       onChange={(e) => setIqraPageStart(e.target.value)}
-                      placeholder="mis: 1"
+                      placeholder="mis: 12"
                       className="w-full px-3 py-2 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                      Halaman Akhir
-                    </label>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Halaman Akhir</label>
                     <input
                       type="number"
                       min={1}
                       value={iqraPageEnd}
                       onChange={(e) => setIqraPageEnd(e.target.value)}
-                      placeholder="mis: 5"
+                      placeholder="mis: 15"
                       className="w-full px-3 py-2 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 bg-blue-50/60 border border-blue-200 rounded-lg gap-3">
+                  <div>
+                    <span className="text-xs font-bold text-blue-900 block">Penambahan Halaman Iqro&apos;</span>
+                    <p className="text-[11px] text-blue-700">Dihitung otomatis dari rentang halaman awal sampai akhir</p>
+                  </div>
+                  <div className="flex items-center space-x-2 shrink-0">
+                    <span className="inline-flex min-w-16 justify-center px-3 py-1.5 bg-white border border-blue-300 font-bold text-sm text-blue-900 rounded">
+                      +{iqraPagesAdded}
+                    </span>
+                    <span className="text-xs font-bold text-blue-900">Halaman</span>
                   </div>
                 </div>
               </div>
@@ -1280,9 +1486,9 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
               type="button"
               onClick={() => handleSaveAssessment()}
               disabled={submitting || deleting}
-              className="py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-lg shadow-sm transition flex items-center justify-center space-x-2 disabled:opacity-50 min-h-[42px]"
+              className="py-3 px-4 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-bold text-xs rounded-lg shadow-sm transition flex items-center justify-center space-x-2 disabled:opacity-50 min-h-[42px]"
             >
-              <Save className="w-4 h-4" />
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
               <span>{submitting ? 'Menyimpan...' : isFinalEvaluationSession ? 'Simpan Presensi' : 'Simpan'}</span>
             </button>
 
@@ -1290,10 +1496,11 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
               type="button"
               onClick={() => handleSaveAssessment('NEXT_STUDENT')}
               disabled={submitting || deleting}
-              className="py-3 px-4 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs rounded-lg shadow-sm transition flex items-center justify-center space-x-2 disabled:opacity-50 min-h-[42px]"
+              className="py-3 px-4 bg-slate-800 hover:bg-slate-900 active:bg-slate-950 text-white font-bold text-xs rounded-lg shadow-sm transition flex items-center justify-center space-x-2 disabled:opacity-50 min-h-[42px]"
             >
-              <span>{isFinalEvaluationSession ? 'Presensi & Siswa Berikutnya' : 'Simpan & Siswa Berikutnya'}</span>
-              <ArrowRight className="w-4 h-4" />
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4 text-emerald-400" />}
+              <span>{submitting ? 'Menyimpan...' : isFinalEvaluationSession ? 'Presensi & Siswa Berikutnya' : 'Simpan & Siswa Berikutnya'}</span>
+              {!submitting && <ArrowRight className="w-4 h-4" />}
             </button>
 
             {!isFinalEvaluationSession && (
@@ -1301,10 +1508,11 @@ export const SessionAssessment: React.FC<SessionAssessmentProps> = ({
                 type="button"
                 onClick={() => handleSaveAssessment('NEXT_SESSION')}
                 disabled={submitting || deleting}
-                className="py-3 px-4 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs rounded-lg shadow-sm transition flex items-center justify-center space-x-2 disabled:opacity-50 min-h-[42px]"
+                className="py-3 px-4 bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white font-bold text-xs rounded-lg shadow-sm transition flex items-center justify-center space-x-2 disabled:opacity-50 min-h-[42px]"
               >
-                <span>Simpan & Sesi Berikutnya</span>
-                <ArrowRight className="w-4 h-4" />
+                {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                <span>{submitting ? 'Menyimpan...' : 'Simpan & Sesi Berikutnya'}</span>
+                {!submitting && <ArrowRight className="w-4 h-4" />}
               </button>
             )}
           </div>

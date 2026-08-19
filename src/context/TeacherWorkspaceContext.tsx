@@ -149,13 +149,10 @@ export const TeacherWorkspaceProvider: React.FC<{
   const isTeacher = currentUser?.role === 'TEACHER';
   const isTeacherOrStaff = currentUser?.role === 'TEACHER' || currentUser?.role === 'ADMIN' || currentUser?.role === 'COORDINATOR';
 
-  // Initial teacher resolution
-  const [selectedTeacherId, setSelectedTeacherIdState] = useState<string>(() => {
-    if (currentUser?.teacher_id && currentUser.teacher_id.trim() !== '') {
-      return currentUser.teacher_id.trim();
-    }
-    return '';
-  });
+  // Initial teacher resolution:
+  // TEACHER role strictly uses authenticated session.teacher_id.
+  // ADMIN/COORDINATOR start with no teacher selected (null/'') to access all halaqahs.
+  const [selectedTeacherId, setSelectedTeacherIdState] = useState<string>('');
 
   const [availableTeachers, setAvailableTeachers] = useState<Teacher[]>([]);
 
@@ -171,21 +168,12 @@ export const TeacherWorkspaceProvider: React.FC<{
     }
   }, [currentUser?.role]);
 
-  // If currentUser prop updates and has linked teacher_id, sync selectedTeacherId
-  useEffect(() => {
-    if (currentUser?.teacher_id && currentUser.teacher_id.trim() !== '') {
-      setSelectedTeacherIdState(currentUser.teacher_id.trim());
-    } else if (currentUser?.role === 'TEACHER') {
-      setSelectedTeacherIdState('');
-    }
-  }, [currentUser?.teacher_id, currentUser?.role]);
-
   const effectiveTeacherId = isTeacher ? (currentUser?.teacher_id || '') : selectedTeacherId;
 
   const [workspace, setWorkspace] = useState<TeacherWorkspaceBootstrap | null>(() => {
-    const initialTeacherId = currentUser?.teacher_id || '';
-    if (initialTeacherId) {
-      const cached = loadCachedWorkspace(initialTeacherId);
+    const cacheKey = isTeacher ? (currentUser?.teacher_id || '') : (selectedTeacherId || '__ADMIN_ALL__');
+    if (cacheKey) {
+      const cached = loadCachedWorkspace(cacheKey);
       if (cached) {
         console.log('[PERF] ASSESSMENT FORM RENDER: Initialized immediately from local cache');
         return cached;
@@ -194,11 +182,12 @@ export const TeacherWorkspaceProvider: React.FC<{
     return null;
   });
 
-  const [isLoading, setIsLoading] = useState<boolean>(!workspace && Boolean(effectiveTeacherId));
+  const [isLoading, setIsLoading] = useState<boolean>(!workspace && Boolean(isTeacher ? currentUser?.teacher_id : true));
   const [isRevalidating, setIsRevalidating] = useState<boolean>(false);
   const [activeHalaqahId, setActiveHalaqahId] = useState<string>(() => workspace?.halaqah?.halaqah_id || '');
   const [pendingWrites, setPendingWrites] = useState<PendingAssessmentWrite[]>(() => {
-    return effectiveTeacherId ? loadPendingWrites(effectiveTeacherId) : [];
+    const queueKey = isTeacher ? (currentUser?.teacher_id || '') : (selectedTeacherId || '__ADMIN_ALL__');
+    return queueKey ? loadPendingWrites(queueKey) : [];
   });
   const [syncStatus, setSyncStatus] = useState<'SYNCED' | 'SYNCING' | 'PENDING' | 'ERROR'>('SYNCED');
   const [syncMessage, setSyncMessage] = useState<string>('Tersinkron');
@@ -231,11 +220,36 @@ export const TeacherWorkspaceProvider: React.FC<{
 
     return students.map(s => {
       const asms = studentAsmsMap.get(s.student_id) || [];
-      const totalLines = asms.reduce((sum, a) => sum + (Number(a.lines_added) || 0), 0);
+      let ziyadahLines = 0;
+      let nuroniyyahLines = 0;
+      let iqraPages = 0;
+
+      asms.forEach(a => {
+        const mode = a.assessment_mode?.toUpperCase();
+        if (mode === 'IQRA' || (!mode && (a.iqra_level != null || a.iqra_page_start != null || a.iqra_page_end != null))) {
+          const explicit = Number(a.iqra_pages_added);
+          const start = Number(a.iqra_page_start);
+          const end = Number(a.iqra_page_end);
+          const derived = Number.isFinite(start) && Number.isFinite(end) && start > 0 && end >= start ? end - start + 1 : 0;
+          iqraPages += Number.isFinite(explicit) && explicit >= 0 ? explicit : derived;
+          return;
+        }
+
+        const lines = Number(a.lines_added) || 0;
+        if (mode === 'NURONIYYAH' || (!mode && a.nuroniyyah_dars)) {
+          nuroniyyahLines += lines;
+        } else {
+          ziyadahLines += lines;
+        }
+      });
+
       const studentEval = evalMap.get(s.participant_id) || evalMap.get(s.student_id);
       return {
         ...s,
-        totalLinesAdded: totalLines,
+        totalLinesAdded: ziyadahLines + nuroniyyahLines,
+        totalZiyadahLinesAdded: ziyadahLines,
+        totalNuroniyyahLinesAdded: nuroniyyahLines,
+        totalIqraPagesAdded: iqraPages,
         completionStatus: studentEval ? studentEval.completion_status : (s.completionStatus || 'NOT_EVALUATED')
       };
     });
@@ -272,7 +286,8 @@ export const TeacherWorkspaceProvider: React.FC<{
       ? teacherIdOverride
       : (isTeacher ? (currentUser.teacher_id || '') : selectedTeacherId);
 
-    if (!targetTeacherId) {
+    // TEACHER role cannot load workspace without assigned teacher_id
+    if (isTeacher && !targetTeacherId) {
       setWorkspace(null);
       setIsLoading(false);
       setIsRevalidating(false);
@@ -292,7 +307,11 @@ export const TeacherWorkspaceProvider: React.FC<{
     }
 
     try {
-      const serverData = await ApiService.getTeacherWorkspaceBootstrap(undefined, targetHalaqah, targetTeacherId);
+      const serverData = await ApiService.getTeacherWorkspaceBootstrap(
+        undefined,
+        targetHalaqah || undefined,
+        targetTeacherId && targetTeacherId.trim() !== '' ? targetTeacherId.trim() : undefined
+      );
       const tEnd = performance.now();
       console.log(`[PERF] WORKSPACE PRELOAD COMPLETE: ${Math.round(tEnd - tStart)}ms`);
 
@@ -301,7 +320,8 @@ export const TeacherWorkspaceProvider: React.FC<{
       }
 
       // Merge server data with pending writes to protect optimistic changes
-      const currentPending = loadPendingWrites(targetTeacherId);
+      const cacheKey = isTeacher ? (currentUser.teacher_id || '') : (targetTeacherId || '__ADMIN_ALL__');
+      const currentPending = loadPendingWrites(cacheKey);
       let mergedAssessments = [...serverData.assessments];
 
       currentPending.forEach(pending => {
@@ -327,7 +347,7 @@ export const TeacherWorkspaceProvider: React.FC<{
           ayah_end: pPayload.end_ayah,
           lines_added: pPayload.lines_added || 0,
           session_note: pPayload.notes,
-          teacher_id: pPayload.teacher_id || targetTeacherId,
+          teacher_id: pPayload.teacher_id || targetTeacherId || '',
           is_deleted: false,
           created_at: new Date(pending.localTimestamp).toISOString(),
           updated_at: new Date(pending.localTimestamp).toISOString()
@@ -361,7 +381,7 @@ export const TeacherWorkspaceProvider: React.FC<{
         setActiveHalaqahId('');
       }
       setLastSyncedAt(now);
-      saveWorkspaceToCache(targetTeacherId, updatedWorkspace);
+      saveWorkspaceToCache(cacheKey, updatedWorkspace);
     } catch (err: any) {
       console.warn('Teacher workspace revalidation failed:', err.message);
       setSyncStatus(pendingWrites.length > 0 ? 'PENDING' : 'ERROR');
@@ -374,9 +394,14 @@ export const TeacherWorkspaceProvider: React.FC<{
 
   // Initial preload on mount or when teacher identity becomes available
   useEffect(() => {
-    if (isTeacherOrStaff && effectiveTeacherId) {
-      // 1. Try to load cached data immediately
-      const cached = loadCachedWorkspace(effectiveTeacherId);
+    if (isTeacherOrStaff) {
+      if (isTeacher && !currentUser?.teacher_id) {
+        setWorkspace(null);
+        setIsLoading(false);
+        return;
+      }
+      const cacheKey = isTeacher ? (currentUser?.teacher_id || '') : (selectedTeacherId || '__ADMIN_ALL__');
+      const cached = loadCachedWorkspace(cacheKey);
       if (cached) {
         setWorkspace(cached);
         if (cached.halaqah?.halaqah_id) {
@@ -384,34 +409,25 @@ export const TeacherWorkspaceProvider: React.FC<{
         }
         setIsLoading(false);
       }
-      // 2. Run stale-while-revalidate in background
       preloadWorkspace(false, undefined, effectiveTeacherId);
-    } else if (isTeacherOrStaff && !effectiveTeacherId) {
-      setWorkspace(null);
-      setIsLoading(false);
     }
-  }, [effectiveTeacherId, isTeacherOrStaff]);
+  }, [effectiveTeacherId, isTeacherOrStaff, isTeacher, currentUser?.teacher_id]);
 
   // Change teacher explicitly (ADMIN/COORDINATOR)
   const setSelectedTeacherId = useCallback((newTeacherId: string) => {
     if (isTeacher) return; // Strict TEACHER role rule: never change identity
 
     const oldTeacherId = selectedTeacherId;
-    if (oldTeacherId && oldTeacherId !== newTeacherId) {
-      clearTeacherWorkspaceCache(oldTeacherId);
+    if (oldTeacherId !== newTeacherId) {
+      clearTeacherWorkspaceCache(oldTeacherId || '__ADMIN_ALL__');
     }
 
     setSelectedTeacherIdState(newTeacherId);
     setActiveHalaqahId('');
 
-    if (!newTeacherId) {
-      setWorkspace(null);
-      setIsLoading(false);
-      return;
-    }
-
     // Check if new teacher has cached data
-    const cached = loadCachedWorkspace(newTeacherId);
+    const cacheKey = newTeacherId || '__ADMIN_ALL__';
+    const cached = loadCachedWorkspace(cacheKey);
     if (cached) {
       setWorkspace(cached);
       if (cached.halaqah?.halaqah_id) {
@@ -423,7 +439,7 @@ export const TeacherWorkspaceProvider: React.FC<{
       setIsLoading(true);
     }
 
-    // Preload fresh workspace for selected teacher
+    // Preload fresh workspace for selected teacher (or all halaqahs when newTeacherId is empty)
     preloadWorkspace(true, undefined, newTeacherId);
   }, [isTeacher, selectedTeacherId, preloadWorkspace]);
 
@@ -471,7 +487,11 @@ export const TeacherWorkspaceProvider: React.FC<{
     if (!currentUser || !workspace) {
       return { success: false, error: 'Sesi guru belum siap.' };
     }
-    const currentTeacherId = effectiveTeacherId || currentUser.teacher_id || currentUser.user_id;
+    const currentTeacherId = isTeacher
+      ? (currentUser.teacher_id || '')
+      : (selectedTeacherId || workspace.assignedTeachers?.[0]?.teacher_id || '');
+    const cacheKey = isTeacher ? (currentUser.teacher_id || '') : (selectedTeacherId || '__ADMIN_ALL__');
+
     const eventId = workspace.event?.event_id || '';
     const participantId = payload.participant_id;
     const sessionConfigId = payload.session_config_id;
@@ -505,10 +525,12 @@ export const TeacherWorkspaceProvider: React.FC<{
       ayah_start: payload.start_ayah,
       surah_end: payload.end_surah,
       ayah_end: payload.end_ayah,
-      lines_added: payload.lines_added || 0,
+      lines_added: payload.lines_added,
       iqra_level: payload.iqra_level,
       iqra_page_start: payload.iqra_page_start,
       iqra_page_end: payload.iqra_page_end,
+      iqra_pages_added: payload.iqra_pages_added,
+      nuroniyyah_dars: payload.nuroniyyah_dars,
       session_note: payload.notes || '',
       teacher_id: payloadWithTeacher.teacher_id,
       is_deleted: false,
@@ -543,7 +565,7 @@ export const TeacherWorkspaceProvider: React.FC<{
 
     // 3. Update React state & cache
     setWorkspace(updatedWorkspace);
-    saveWorkspaceToCache(currentTeacherId, updatedWorkspace);
+    saveWorkspaceToCache(cacheKey, updatedWorkspace);
 
     // 4. Update Pending Write Queue
     const queueItemId = `queue-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
@@ -562,7 +584,7 @@ export const TeacherWorkspaceProvider: React.FC<{
     let nextQueue = pendingWrites.filter(p => !(p.participant_id === participantId && p.session_config_id === sessionConfigId));
     nextQueue.push(pendingItem);
     setPendingWrites(nextQueue);
-    savePendingWrites(currentTeacherId, nextQueue);
+    savePendingWrites(cacheKey, nextQueue);
 
     setSyncStatus('SYNCING');
     setSyncMessage('Menyimpan...');
@@ -570,9 +592,9 @@ export const TeacherWorkspaceProvider: React.FC<{
     // 5. Send background sync request
     ApiService.submitSessionAssessment(payloadWithTeacher, currentUser.user_id)
       .then(serverAsm => {
-        const finalQueue = loadPendingWrites(currentTeacherId).filter(p => p.id !== queueItemId && !(p.participant_id === participantId && p.session_config_id === sessionConfigId));
+        const finalQueue = loadPendingWrites(cacheKey).filter(p => p.id !== queueItemId && !(p.participant_id === participantId && p.session_config_id === sessionConfigId));
         setPendingWrites(finalQueue);
-        savePendingWrites(currentTeacherId, finalQueue);
+        savePendingWrites(cacheKey, finalQueue);
 
         if (serverAsm?.assessment_id && serverAsm.assessment_id !== optimisticAsm.assessment_id) {
           setWorkspace(prev => {
@@ -581,7 +603,7 @@ export const TeacherWorkspaceProvider: React.FC<{
               a.assessment_id === optimisticAsm.assessment_id ? { ...a, assessment_id: serverAsm.assessment_id } : a
             );
             const patchedWs = { ...prev, assessments: patched };
-            saveWorkspaceToCache(currentTeacherId, patchedWs);
+            saveWorkspaceToCache(cacheKey, patchedWs);
             return patchedWs;
           });
         }
@@ -594,20 +616,20 @@ export const TeacherWorkspaceProvider: React.FC<{
       })
       .catch(err => {
         console.warn('Optimistic assessment write failed to sync:', err.message);
-        const failedQueue = loadPendingWrites(currentTeacherId).map(p => {
+        const failedQueue = loadPendingWrites(cacheKey).map(p => {
           if (p.id === queueItemId || (p.participant_id === participantId && p.session_config_id === sessionConfigId)) {
             return { ...p, status: 'FAILED' as const, error: err.message || 'Gagal tersinkron' };
           }
           return p;
         });
         setPendingWrites(failedQueue);
-        savePendingWrites(currentTeacherId, failedQueue);
+        savePendingWrites(cacheKey, failedQueue);
         setSyncStatus('PENDING');
         setSyncMessage(`⚠ ${failedQueue.length} perubahan belum tersinkron`);
       });
 
     return { success: true };
-  }, [currentUser, workspace, pendingWrites, effectiveTeacherId, recomputeStudentProgress]);
+  }, [currentUser, workspace, pendingWrites, effectiveTeacherId, isTeacher, selectedTeacherId, recomputeStudentProgress]);
 
   // Optimistic Delete Assessment
   const deleteAssessmentOptimistic = useCallback(async (
@@ -619,7 +641,10 @@ export const TeacherWorkspaceProvider: React.FC<{
     if (!currentUser || !workspace) {
       return { success: false, error: 'Sesi guru belum siap.' };
     }
-    const currentTeacherId = effectiveTeacherId || currentUser.teacher_id || currentUser.user_id;
+    const currentTeacherId = isTeacher
+      ? (currentUser.teacher_id || '')
+      : (selectedTeacherId || workspace.assignedTeachers?.[0]?.teacher_id || '');
+    const cacheKey = isTeacher ? (currentUser.teacher_id || '') : (selectedTeacherId || '__ADMIN_ALL__');
 
     // 1. Immediately soft delete from local assessments
     const updatedAssessments = workspace.assessments.filter(a => a.assessment_id !== assessmentId);
@@ -637,12 +662,12 @@ export const TeacherWorkspaceProvider: React.FC<{
     };
 
     setWorkspace(updatedWorkspace);
-    saveWorkspaceToCache(currentTeacherId, updatedWorkspace);
+    saveWorkspaceToCache(cacheKey, updatedWorkspace);
 
     // Remove from pending write queue if it was pending
     const remainingQueue = pendingWrites.filter(p => !(participantId && sessionConfigId && p.participant_id === participantId && p.session_config_id === sessionConfigId));
     setPendingWrites(remainingQueue);
-    savePendingWrites(currentTeacherId, remainingQueue);
+    savePendingWrites(cacheKey, remainingQueue);
 
     // 2. Call delete API in background
     ApiService.deleteSessionAssessment(assessmentId, currentTeacherId)
@@ -655,14 +680,18 @@ export const TeacherWorkspaceProvider: React.FC<{
       });
 
     return { success: true };
-  }, [currentUser, workspace, pendingWrites, effectiveTeacherId, recomputeStudentProgress]);
+  }, [currentUser, workspace, pendingWrites, effectiveTeacherId, isTeacher, selectedTeacherId, recomputeStudentProgress]);
 
   // Optimistic Save Final Evaluation
   const saveFinalEvaluationOptimistic = useCallback(async (payload: any): Promise<{ success: boolean; error?: string }> => {
     if (!currentUser || !workspace) {
       return { success: false, error: 'Sesi guru belum siap.' };
     }
-    const currentTeacherId = effectiveTeacherId || currentUser.teacher_id || currentUser.user_id;
+    const currentTeacherId = isTeacher
+      ? (currentUser.teacher_id || '')
+      : (selectedTeacherId || workspace.assignedTeachers?.[0]?.teacher_id || '');
+    const cacheKey = isTeacher ? (currentUser.teacher_id || '') : (selectedTeacherId || '__ADMIN_ALL__');
+
     const eventId = workspace.event?.event_id || '';
     const participantId = payload.participant_id;
     const studentId = payload.student_id;
@@ -719,7 +748,7 @@ export const TeacherWorkspaceProvider: React.FC<{
     };
 
     setWorkspace(updatedWorkspace);
-    saveWorkspaceToCache(currentTeacherId, updatedWorkspace);
+    saveWorkspaceToCache(cacheKey, updatedWorkspace);
 
     setSyncStatus('SYNCING');
     setSyncMessage('Menyimpan evaluasi...');
@@ -733,7 +762,7 @@ export const TeacherWorkspaceProvider: React.FC<{
               e.participant_id === participantId ? { ...e, final_evaluation_id: serverEval.final_evaluation_id } : e
             );
             const patchedWs = { ...prev, finalEvaluations: patched };
-            saveWorkspaceToCache(currentTeacherId, patchedWs);
+            saveWorkspaceToCache(cacheKey, patchedWs);
             return patchedWs;
           });
         }
@@ -747,7 +776,7 @@ export const TeacherWorkspaceProvider: React.FC<{
       });
 
     return { success: true };
-  }, [currentUser, workspace, effectiveTeacherId, recomputeStudentProgress]);
+  }, [currentUser, workspace, effectiveTeacherId, isTeacher, selectedTeacherId, recomputeStudentProgress]);
 
   // Handle manual refresh
   const refreshWorkspace = useCallback(async () => {

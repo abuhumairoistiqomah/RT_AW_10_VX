@@ -49,26 +49,30 @@ export function getSurahNameFormatted(surahNo?: number | null): string {
  * Rules:
  * 1. If no valid saved progress exists, returns "0" (never undefined, null, Surah #undefined, or NaN).
  * 2. For ZIYADAH: returns e.g. "78. An-Naba' : 1–15 (15 Baris)" when valid fields exist.
- * 3. For IQRA: returns e.g. "Iqra 3 • Halaman 12–15".
- * 4. Treats 0 as a valid numeric value with strict nullish checks.
+ * 3. For NURONIYYAH: returns e.g. "Ad-Dars 6 (8 Baris)" or "Nuroniyyah • Ad-Dars 1 (10 Baris)".
+ * 4. For IQRA: returns e.g. "Iqro' Jilid 3 • Halaman 12–15 (+4 Halaman)".
+ * 5. Treats 0 as a valid numeric value with strict nullish checks.
  */
 export function formatCurrentProgress(assessment?: any | null): string {
   if (!assessment || typeof assessment !== 'object') {
     return '0';
   }
 
-  // Check IQRA mode
-  const isIqra = assessment.assessment_mode === 'IQRA' || (assessment.iqra_level != null && !assessment.surah_end && !assessment.surah_start);
+  // Check IQRA mode first so Iqro' is never folded into Nuroniyyah.
+  const isIqra = assessment.assessment_mode === 'IQRA' || (assessment.iqra_level != null && !assessment.nuroniyyah_dars && !assessment.surah_end && !assessment.surah_start);
   if (isIqra) {
     const level = assessment.iqra_level != null && !isNaN(Number(assessment.iqra_level)) ? Number(assessment.iqra_level) : null;
     const pageStart = assessment.iqra_page_start != null && !isNaN(Number(assessment.iqra_page_start)) ? Number(assessment.iqra_page_start) : null;
     const pageEnd = assessment.iqra_page_end != null && !isNaN(Number(assessment.iqra_page_end)) ? Number(assessment.iqra_page_end) : null;
+    const explicitPages = assessment.iqra_pages_added != null && !isNaN(Number(assessment.iqra_pages_added)) ? Number(assessment.iqra_pages_added) : null;
+    const derivedPages = pageStart != null && pageEnd != null && pageEnd >= pageStart ? pageEnd - pageStart + 1 : null;
+    const pagesAdded = explicitPages != null && explicitPages >= 0 ? explicitPages : derivedPages;
 
     if (level == null && pageStart == null && pageEnd == null) {
       return '0';
     }
 
-    const levelText = level != null ? `Iqra ${level}` : 'Iqra';
+    const levelText = level != null ? `Iqro' Jilid ${level}` : "Iqro'";
     let pageText = '';
     if (pageStart != null && pageEnd != null && pageStart !== pageEnd) {
       pageText = `Halaman ${pageStart}–${pageEnd}`;
@@ -78,7 +82,19 @@ export function formatCurrentProgress(assessment?: any | null): string {
       pageText = `Halaman ${pageEnd}`;
     }
 
-    return pageText ? `${levelText} • ${pageText}` : levelText;
+    const progressText = pagesAdded != null ? ` (+${pagesAdded} Halaman)` : '';
+    return pageText ? `${levelText} • ${pageText}${progressText}` : `${levelText}${progressText}`;
+  }
+
+  // Check NURONIYYAH mode
+  const isNuroniyyah = assessment.assessment_mode === 'NURONIYYAH' || (assessment.nuroniyyah_dars != null && !assessment.surah_end && !assessment.surah_start);
+  if (isNuroniyyah) {
+    const dars = assessment.nuroniyyah_dars ? String(assessment.nuroniyyah_dars).trim() : 'Nuroniyyah';
+    const lines = assessment.lines_added != null && !isNaN(Number(assessment.lines_added)) ? Number(assessment.lines_added) : null;
+    if (lines != null) {
+      return `${dars} (${lines} Baris)`;
+    }
+    return dars;
   }
 
   // Check ZIYADAH / Surah mode

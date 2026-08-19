@@ -5,7 +5,7 @@ import {
   SummaryStats, DistributionBucket, SkillTransition, SkillStatus,
   CompletionStatus, EvaluationState, AttendanceStatus, BulkAssignResult,
   StudentPlacementBootstrap, PlacementStudent, TeacherWorkspaceBootstrap,
-  TeacherStudentSummary
+  TeacherStudentSummary, AssessmentMode, TargetSource
 } from '../types';
 import {
   INITIAL_CONFIGS, INITIAL_LOOKUPS, INITIAL_STUDENTS, INITIAL_TEACHERS,
@@ -14,15 +14,15 @@ import {
   INITIAL_PARTICIPANTS, INITIAL_ASSESSMENTS, INITIAL_FINAL_EVALUATIONS,
   INITIAL_AUDIT_LOGS
 } from '../data/mockData';
-import { calculateStats, getDistributionBuckets, getStudentLinesMap, calculateSkillTransitions } from '../utils/statistics';
+import { calculateStats, getDistributionBuckets, calculateSkillTransitions } from '../utils/statistics';
 import { getCurrentIso } from '../utils/date';
 import { getSurahByNo } from '../utils/quran';
 import { generateRandomAccessCode } from '../utils/accessCode';
-import { formatParticipantTarget } from '../utils/targetUtils';
+import { formatParticipantTarget, getEffectiveTargets } from '../utils/targetUtils';
 
 // Read Environment Variables & Runtime Database Connection
 const DEFAULT_API_URL =
-  'https://script.google.com/macros/s/AKfycbwtfcT21Q-Uq1Mwp1HoIlCSkIkc8AlghuKLTKS8vXNSt_MX0K5uIEBP8t7qT2wMZCXs4g/exec';
+  'https://script.google.com/macros/s/AKfycbz1g7hgOtVKDcAKrF5H--GQyH0jJuPQlrdl0WAmsMAoGjG0UCb-OVwwlAQyBewoyfhWmQ/exec';
 
 export function resolveApiUrl(): string {
   if (typeof window !== 'undefined') {
@@ -1183,7 +1183,9 @@ export class ApiService {
       events.find(e => e.status === 'ACTIVE') || events[0] || null;
     const currentUser = this.getStoredUser();
     const isTeacher = currentUser?.role === 'TEACHER';
-    const resolvedTeacherId = isTeacher ? currentUser?.teacher_id : (teacherId || currentUser?.teacher_id);
+    const resolvedTeacherId = isTeacher
+      ? (currentUser?.teacher_id || null)
+      : (teacherId && teacherId.trim() !== '' ? teacherId.trim() : null);
 
     if (!targetEvent) {
       return {
@@ -1276,7 +1278,29 @@ export class ApiService {
       const st = studentMap.get(p.student_id);
       const studentEval = evalMap.get(p.participant_id) || evalMap.get(p.student_id);
       const studentAsms = studentAsmsMap.get(p.student_id) || [];
-      const totalLines = studentAsms.reduce((sum, a) => sum + (Number(a.lines_added) || 0), 0);
+      
+      let ziyadahLines = 0;
+      let nuroniyyahLines = 0;
+      let iqraPages = 0;
+      studentAsms.forEach(a => {
+        const mode = a.assessment_mode?.toUpperCase();
+        if (mode === 'IQRA' || (!mode && (a.iqra_level != null || a.iqra_page_start != null || a.iqra_page_end != null))) {
+          const explicit = Number(a.iqra_pages_added);
+          const start = Number(a.iqra_page_start);
+          const end = Number(a.iqra_page_end);
+          const derived = Number.isFinite(start) && Number.isFinite(end) && start > 0 && end >= start ? end - start + 1 : 0;
+          iqraPages += Number.isFinite(explicit) && explicit >= 0 ? explicit : derived;
+          return;
+        }
+
+        const lines = Number(a.lines_added) || 0;
+        if (mode === 'NURONIYYAH' || (!mode && a.nuroniyyah_dars)) {
+          nuroniyyahLines += lines;
+        } else {
+          ziyadahLines += lines;
+        }
+      });
+      const totalLines = ziyadahLines + nuroniyyahLines;
 
       return {
         student_id: p.student_id,
@@ -1288,7 +1312,7 @@ export class ApiService {
         class_snapshot: p.class_snapshot,
         grade_class: `${p.grade_snapshot || ''} (${p.class_snapshot || ''})`,
         gender: st?.gender || selectedHalaqah.gender || 'IKHWAN',
-        skill_status_start: p.skill_status_start || 'NON_BBL',
+        skill_status_start: (p.skill_status_start && String(p.skill_status_start).trim() !== '' ? (String(p.skill_status_start).toUpperCase().trim() as SkillStatus) : undefined),
         baseline_surah: p.baseline_surah,
         baseline_ayah: p.baseline_ayah,
         target_surah_start: p.target_surah_start,
@@ -1296,10 +1320,14 @@ export class ApiService {
         target_surah_end: p.target_surah_end,
         target_ayah_end: p.target_ayah_end,
         target_lines: p.target_lines,
+        target_nuroniyyah_lines: p.target_nuroniyyah_lines,
         target_iqra_pages: p.target_iqra_pages,
         target_source: p.target_source,
-        targetText: formatParticipantTarget(p),
+        targetText: formatParticipantTarget(p, selectedHalaqah),
         totalLinesAdded: totalLines,
+        totalZiyadahLinesAdded: ziyadahLines,
+        totalNuroniyyahLinesAdded: nuroniyyahLines,
+        totalIqraPagesAdded: iqraPages,
         completionStatus: studentEval ? studentEval.completion_status : 'NOT_EVALUATED',
         session_group_id: p.session_group_id || selectedHalaqah.session_group_id
       };
@@ -1318,6 +1346,9 @@ export class ApiService {
         grade_group: selectedHalaqah.grade_group,
         session_group_id: selectedHalaqah.session_group_id,
         location: selectedHalaqah.location,
+        target_ziyadah_lines: selectedHalaqah.target_ziyadah_lines,
+        target_nuroniyyah_lines: selectedHalaqah.target_nuroniyyah_lines ?? selectedHalaqah.target_iqra_pages,
+        target_iqra_pages: selectedHalaqah.target_iqra_pages,
         active: true
       },
       availableHalaqahs,
@@ -1580,12 +1611,13 @@ export class ApiService {
       if (existingIdx >= 0) {
         const existing = list[existingIdx];
         const hasQuran = existing.surah_start != null && existing.surah_start !== ('' as any) && existing.lines_added != null;
+        const hasNuroniyyah = (existing.assessment_mode === 'NURONIYYAH' || existing.nuroniyyah_dars != null) && existing.lines_added != null;
         const hasIqra = existing.iqra_level != null && existing.iqra_page_start != null;
 
         const updated: SessionAssessment = {
           ...existing,
           attendance_status: attendanceStatus,
-          assessment_status: isPresent ? ((hasQuran || hasIqra) ? 'COMPLETED' : 'PENDING') : 'COMPLETED',
+          assessment_status: isPresent ? ((hasQuran || hasNuroniyyah || hasIqra) ? 'COMPLETED' : 'PENDING') : 'COMPLETED',
           event_day_id: sConfig.event_day_id,
           session_no: sConfig.session_no,
           halaqah_id: participant.halaqah_id || existing.halaqah_id,
@@ -1598,9 +1630,12 @@ export class ApiService {
             surah_end: undefined,
             ayah_end: undefined,
             lines_added: undefined,
+            assessment_mode: undefined,
+            nuroniyyah_dars: undefined,
             iqra_level: undefined,
             iqra_page_start: undefined,
-            iqra_page_end: undefined
+            iqra_page_end: undefined,
+            iqra_pages_added: undefined
           })
         };
         list[existingIdx] = updated;
@@ -1813,9 +1848,30 @@ export class ApiService {
     const evals = await this.getFinalEvaluations(event_id);
     const studentEval = evals.find(e => e.student_id === matchedStudent.student_id || e.participant_id === participant.participant_id);
 
-    const totalLinesAdded = studentAssessments
+    let totalZiyadahLinesAdded = 0;
+    let totalNuroniyyahLinesAdded = 0;
+    let totalIqraPagesAdded = 0;
+    studentAssessments
       .filter(a => a.attendance_status === 'PRESENT')
-      .reduce((sum, a) => sum + (a.lines_added || 0), 0);
+      .forEach(a => {
+        const mode = a.assessment_mode?.toUpperCase();
+        if (mode === 'IQRA' || (!mode && (a.iqra_level != null || a.iqra_page_start != null || a.iqra_page_end != null))) {
+          const explicit = Number(a.iqra_pages_added);
+          const start = Number(a.iqra_page_start);
+          const end = Number(a.iqra_page_end);
+          const derived = Number.isFinite(start) && Number.isFinite(end) && start > 0 && end >= start ? end - start + 1 : 0;
+          totalIqraPagesAdded += Number.isFinite(explicit) && explicit >= 0 ? explicit : derived;
+        } else if (mode === 'NURONIYYAH' || (!mode && a.nuroniyyah_dars)) {
+          totalNuroniyyahLinesAdded += Number(a.lines_added) || 0;
+        } else {
+          totalZiyadahLinesAdded += Number(a.lines_added) || 0;
+        }
+      });
+    const totalLinesAdded = totalZiyadahLinesAdded + totalNuroniyyahLinesAdded;
+
+    const halaqahs = await this.getHalaqahList(event_id);
+    const studentHalaqah = halaqahs.find(h => h.halaqah_id === participant.halaqah_id);
+    const effectiveTarget = getEffectiveTargets(participant, studentHalaqah);
 
     const baselineSurahObj = participant.baseline_surah ? getSurahByNo(participant.baseline_surah) : null;
     const targetSurahStartObj = participant.target_surah_start ? getSurahByNo(participant.target_surah_start) : null;
@@ -1825,9 +1881,11 @@ export class ApiService {
       ? `${baselineSurahObj.surah_name} (Ayat 1–${participant.baseline_ayah || 1})`
       : 'Belum diisi';
 
-    const targetText = (targetSurahStartObj && targetSurahEndObj)
-      ? `${targetSurahStartObj.surah_name} Ayat ${participant.target_ayah_start || 1} s/d ${targetSurahEndObj.surah_name} Ayat ${participant.target_ayah_end || 1}`
-      : 'Belum diisi';
+    const targetText = effectiveTarget.displayText !== 'Belum ditentukan'
+      ? effectiveTarget.displayText
+      : (targetSurahStartObj && targetSurahEndObj)
+        ? `${targetSurahStartObj.surah_name} Ayat ${participant.target_ayah_start || 1} s/d ${targetSurahEndObj.surah_name} Ayat ${participant.target_ayah_end || 1}`
+        : 'Belum diisi';
 
     return {
       success: true,
@@ -1837,8 +1895,11 @@ export class ApiService {
       eventName: currentEvt?.event_name || 'Rumah Tahfidz',
       baselineText,
       targetText,
-      targetLines: participant.target_lines != null && participant.target_lines > 0 ? participant.target_lines : null,
+      targetLines: effectiveTarget.ziyadahLines,
       totalLinesAdded,
+      totalZiyadahLinesAdded,
+      totalNuroniyyahLinesAdded,
+      totalIqraPagesAdded,
       completionStatus: studentEval ? studentEval.completion_status : ('NOT_EVALUATED' as EvaluationState),
       sessions: studentAssessments.map(a => {
         const isPresent = a.attendance_status === 'PRESENT';
@@ -1846,9 +1907,21 @@ export class ApiService {
         return {
           sessionNo: a.session_no,
           attendance: a.attendance_status,
+          assessment_mode: a.assessment_mode,
+          assessmentMode: a.assessment_mode,
+          nuroniyyah_dars: a.nuroniyyah_dars,
+          nuroniyyahDars: a.nuroniyyah_dars,
           surahName: isPresent ? (sObj?.surah_name || (a.surah_start ? `Surah #${a.surah_start}` : null)) : null,
           ayahRange: isPresent && a.ayah_start != null && a.ayah_end != null ? `${a.ayah_start}–${a.ayah_end}` : null,
-          linesAdded: isPresent && a.lines_added != null ? a.lines_added : null
+          linesAdded: isPresent && a.lines_added != null ? a.lines_added : null,
+          iqraLevel: a.iqra_level,
+          iqraPageStart: a.iqra_page_start,
+          iqraPageEnd: a.iqra_page_end,
+          iqraPagesAdded: a.iqra_pages_added != null
+            ? Number(a.iqra_pages_added)
+            : (a.iqra_page_start != null && a.iqra_page_end != null && Number(a.iqra_page_end) >= Number(a.iqra_page_start)
+              ? Number(a.iqra_page_end) - Number(a.iqra_page_start) + 1
+              : 0)
         };
       })
     };
@@ -1895,12 +1968,32 @@ export class ApiService {
     const allAssessments = await this.getSessionAssessments(event_id);
     const halaqahAssessments = allAssessments.filter(a => a.halaqah_id === currentHalaqah.halaqah_id || studentIdsInHalaqah.has(a.student_id));
 
-    const linesMap = getStudentLinesMap(halaqahAssessments);
     const evals = await this.getFinalEvaluations(event_id);
 
     const mappedStudents = halaqahParticipants.map(p => {
       const st = students.find(s => s.student_id === p.student_id);
       const studentEval = evals.find(e => e.student_id === p.student_id || e.participant_id === p.participant_id);
+      const studentAssessments = halaqahAssessments.filter(a => a.student_id === p.student_id && a.attendance_status === 'PRESENT' && !a.is_deleted);
+
+      let ziyadahLines = 0;
+      let nuroniyyahLines = 0;
+      let iqraPages = 0;
+      studentAssessments.forEach(a => {
+        const mode = a.assessment_mode?.toUpperCase();
+        if (mode === 'IQRA' || (!mode && (a.iqra_level != null || a.iqra_page_start != null || a.iqra_page_end != null))) {
+          const explicit = Number(a.iqra_pages_added);
+          const start = Number(a.iqra_page_start);
+          const end = Number(a.iqra_page_end);
+          const derived = Number.isFinite(start) && Number.isFinite(end) && start > 0 && end >= start ? end - start + 1 : 0;
+          iqraPages += Number.isFinite(explicit) && explicit >= 0 ? explicit : derived;
+          return;
+        }
+
+        const lines = Number(a.lines_added) || 0;
+        if (mode === 'NURONIYYAH' || (!mode && a.nuroniyyah_dars)) nuroniyyahLines += lines;
+        else ziyadahLines += lines;
+      });
+
       return {
         student_id: p.student_id,
         participant_id: p.participant_id,
@@ -1908,11 +2001,16 @@ export class ApiService {
         full_name: st?.full_name || 'Siswa',
         access_code: st?.access_code || '',
         grade_class: `${p.grade_snapshot} (${p.class_snapshot})`,
+        skill_status_start: (p.skill_status_start && String(p.skill_status_start).trim() !== '' ? (String(p.skill_status_start).toUpperCase().trim() as SkillStatus) : undefined),
         target_lines: p.target_lines,
+        target_nuroniyyah_lines: p.target_nuroniyyah_lines,
         target_iqra_pages: p.target_iqra_pages,
         target_source: p.target_source,
-        targetText: formatParticipantTarget(p),
-        totalLinesAdded: linesMap[p.student_id] || 0,
+        targetText: formatParticipantTarget(p, currentHalaqah),
+        totalLinesAdded: ziyadahLines + nuroniyyahLines,
+        totalZiyadahLinesAdded: ziyadahLines,
+        totalNuroniyyahLinesAdded: nuroniyyahLines,
+        totalIqraPagesAdded: iqraPages,
         completionStatus: studentEval ? studentEval.completion_status : ('NOT_EVALUATED' as EvaluationState)
       };
     });
@@ -1986,32 +2084,79 @@ export class ApiService {
     let surah_end: number | undefined;
     let ayah_end: number | undefined;
     let lines_added: number | undefined;
+    let assessment_mode: AssessmentMode | undefined;
+    let nuroniyyah_dars: string | undefined;
+    let iqra_level: number | undefined;
+    let iqra_page_start: number | undefined;
+    let iqra_page_end: number | undefined;
+    let iqra_pages_added: number | undefined;
 
     if (attendanceStatus === 'PRESENT') {
-      const sStart = payload.surah_start ?? payload.start_surah;
-      const aStart = payload.ayah_start ?? payload.start_ayah;
-      const sEnd = payload.surah_end ?? payload.end_surah;
-      const aEnd = payload.ayah_end ?? payload.end_ayah;
+      const mode: AssessmentMode = payload.assessment_mode || (payload.nuroniyyah_dars ? 'NURONIYYAH' : (payload.iqra_level ? 'IQRA' : 'ZIYADAH'));
+      assessment_mode = mode;
       const rawLines = payload.lines_added ?? payload.totalLines;
 
-      if (sStart == null || aStart == null || sEnd == null || aEnd == null) {
-        throw new Error('Untuk status HADIR, data Surah dan Ayat (awal & akhir) wajib diisi.');
-      }
-      if (rawLines == null) {
-        throw new Error('Untuk status HADIR, jumlah baris (lines_added) wajib diisi.');
-      }
+      if (mode === 'NURONIYYAH') {
+        const dars = payload.nuroniyyah_dars || '';
+        if (!dars) {
+          throw new Error('Untuk status HADIR pada mode Nuroniyyah, data Ad-Dars wajib dipilih.');
+        }
+        if (rawLines == null || isNaN(Number(rawLines))) {
+          throw new Error('Untuk status HADIR, jumlah baris (lines_added) wajib diisi.');
+        }
+        nuroniyyah_dars = String(dars);
+        lines_added = Number(rawLines);
+      } else if (mode === 'IQRA') {
+        const level = Number(payload.iqra_level);
+        const pageStart = Number(payload.iqra_page_start);
+        const pageEnd = Number(payload.iqra_page_end);
+        if (!Number.isFinite(level) || level < 1 || level > 6) {
+          throw new Error("Jilid Iqro' harus angka 1 sampai 6.");
+        }
+        if (!Number.isFinite(pageStart) || pageStart < 1 || !Number.isFinite(pageEnd) || pageEnd < pageStart) {
+          throw new Error("Rentang halaman Iqro' tidak valid.");
+        }
+        iqra_level = level;
+        iqra_page_start = pageStart;
+        iqra_page_end = pageEnd;
+        const explicitPages = Number(payload.iqra_pages_added);
+        iqra_pages_added = Number.isFinite(explicitPages) && explicitPages >= 0
+          ? explicitPages
+          : (pageEnd - pageStart + 1);
+        lines_added = undefined;
+      } else {
+        // ZIYADAH
+        assessment_mode = 'ZIYADAH';
+        const sStart = payload.surah_start ?? payload.start_surah;
+        const aStart = payload.ayah_start ?? payload.start_ayah;
+        const sEnd = payload.surah_end ?? payload.end_surah;
+        const aEnd = payload.ayah_end ?? payload.end_ayah;
 
-      surah_start = Number(sStart);
-      ayah_start = Number(aStart);
-      surah_end = Number(sEnd);
-      ayah_end = Number(aEnd);
-      lines_added = Number(rawLines);
+        if (sStart == null || aStart == null || sEnd == null || aEnd == null) {
+          throw new Error('Untuk status HADIR pada mode Hafalan Al-Qur\'an, data Surah dan Ayat (awal & akhir) wajib diisi.');
+        }
+        if (rawLines == null || isNaN(Number(rawLines))) {
+          throw new Error('Untuk status HADIR, jumlah baris (lines_added) wajib diisi.');
+        }
+
+        surah_start = Number(sStart);
+        ayah_start = Number(aStart);
+        surah_end = Number(sEnd);
+        ayah_end = Number(aEnd);
+        lines_added = Number(rawLines);
+      }
     } else {
       surah_start = undefined;
       ayah_start = undefined;
       surah_end = undefined;
       ayah_end = undefined;
       lines_added = undefined;
+      assessment_mode = undefined;
+      nuroniyyah_dars = undefined;
+      iqra_level = undefined;
+      iqra_page_start = undefined;
+      iqra_page_end = undefined;
+      iqra_pages_added = undefined;
     }
 
     const asm: SessionAssessment = {
@@ -2024,6 +2169,12 @@ export class ApiService {
       halaqah_id: participant.halaqah_id,
       session_no: matchingConfig.session_no,
       attendance_status: attendanceStatus,
+      assessment_mode,
+      nuroniyyah_dars,
+      iqra_level,
+      iqra_page_start,
+      iqra_page_end,
+      iqra_pages_added,
       surah_start,
       ayah_start,
       surah_end,
@@ -2380,29 +2531,56 @@ export class ApiService {
         studentAsmMap.set(a.student_id, existing);
       });
 
-      const validProgressLines: number[] = [];
-      let missingProgressCount = 0;
+      const ziyadahTotals: number[] = [];
+      const nuroniyyahTotals: number[] = [];
+      const iqraTotals: number[] = [];
+      let noAnyProgressCount = 0;
 
       participants.forEach(p => {
-        const asms = studentAsmMap.get(p.student_id);
-        if (asms && asms.length > 0) {
-          const presentAsms = asms.filter(a => a.attendance_status === 'PRESENT');
-          if (presentAsms.length > 0) {
-            const totalLines = presentAsms.reduce((sum, a) => sum + (a.lines_added || 0), 0);
-            validProgressLines.push(totalLines);
-          } else {
-            missingProgressCount++;
+        const presentAsms = (studentAsmMap.get(p.student_id) || []).filter(a => a.attendance_status === 'PRESENT');
+        let ziyadahLines = 0;
+        let nuroniyyahLines = 0;
+        let iqraPages = 0;
+        let ziyadahCount = 0;
+        let nuroniyyahCount = 0;
+        let iqraCount = 0;
+
+        presentAsms.forEach(a => {
+          const mode = a.assessment_mode?.toUpperCase();
+          if (mode === 'IQRA' || (!mode && (a.iqra_level != null || a.iqra_page_start != null || a.iqra_page_end != null))) {
+            const explicit = Number(a.iqra_pages_added);
+            const start = Number(a.iqra_page_start);
+            const end = Number(a.iqra_page_end);
+            const derived = Number.isFinite(start) && Number.isFinite(end) && start > 0 && end >= start ? end - start + 1 : 0;
+            iqraPages += Number.isFinite(explicit) && explicit >= 0 ? explicit : derived;
+            iqraCount++;
+            return;
           }
-        } else {
-          missingProgressCount++;
-        }
+
+          const lines = Number(a.lines_added) || 0;
+          if (mode === 'NURONIYYAH' || (!mode && a.nuroniyyah_dars)) {
+            nuroniyyahLines += lines;
+            nuroniyyahCount++;
+          } else {
+            ziyadahLines += lines;
+            ziyadahCount++;
+          }
+        });
+
+        if (ziyadahCount > 0) ziyadahTotals.push(ziyadahLines);
+        if (nuroniyyahCount > 0) nuroniyyahTotals.push(nuroniyyahLines);
+        if (iqraCount > 0) iqraTotals.push(iqraPages);
+        if (ziyadahCount === 0 && nuroniyyahCount === 0 && iqraCount === 0) noAnyProgressCount++;
       });
 
       const participantCount = participants.length;
-      const validProgressCount = validProgressLines.length;
+      const validProgressCount = ziyadahTotals.length;
+      const missingProgressCount = participantCount - validProgressCount;
 
-      const stats = calculateStats(validProgressLines);
-      const distributionBuckets = getDistributionBuckets(validProgressLines);
+      const stats = calculateStats(ziyadahTotals);
+      const distributionBuckets = getDistributionBuckets(ziyadahTotals);
+      const nuroniyyahStats = calculateStats(nuroniyyahTotals);
+      const iqraStats = calculateStats(iqraTotals);
 
       const evalMap: Record<string, SkillStatus> = {};
       const completionMap = new Map<string, CompletionStatus>();
@@ -2439,6 +2617,8 @@ export class ApiService {
         : 0;
 
       stats.completionRate = completionRateAmongEvaluated;
+      nuroniyyahStats.completionRate = completionRateAmongEvaluated;
+      iqraStats.completionRate = completionRateAmongEvaluated;
 
       const { transitions: skillTransitions, notEvaluatedSkillCount } = calculateSkillTransitions(participants, evalMap);
 
@@ -2446,6 +2626,18 @@ export class ApiService {
         participantCount,
         validProgressCount,
         missingProgressCount,
+        ziyadahProgressCount: ziyadahTotals.length,
+        ziyadahMissingCount: participantCount - ziyadahTotals.length,
+        ziyadahStats: stats,
+        ziyadahDistributionBuckets: distributionBuckets,
+        nuroniyyahProgressCount: nuroniyyahTotals.length,
+        nuroniyyahMissingCount: participantCount - nuroniyyahTotals.length,
+        nuroniyyahStats,
+        nuroniyyahDistributionBuckets: getDistributionBuckets(nuroniyyahTotals),
+        iqraProgressCount: iqraTotals.length,
+        iqraMissingCount: participantCount - iqraTotals.length,
+        iqraStats,
+        noAnyProgressCount,
         evaluatedCount,
         notEvaluatedCount,
         evaluationCoverage,
@@ -2479,11 +2671,17 @@ export class ApiService {
             evaluationCoverage: metrics.evaluationCoverage,
             completionRateAmongEvaluated: metrics.completionRateAmongEvaluated,
             stats: metrics.stats,
-            totalLines: metrics.stats.totalLines,
-            meanLines: metrics.stats.mean,
-            medianLines: metrics.stats.median,
-            stdDev: metrics.stats.stdDev,
-            cv: metrics.stats.cv
+            totalLines: metrics.ziyadahStats.totalLines,
+            meanLines: metrics.ziyadahStats.mean,
+            medianLines: metrics.ziyadahStats.median,
+            stdDev: metrics.ziyadahStats.stdDev,
+            cv: metrics.ziyadahStats.cv,
+            ziyadahProgressCount: metrics.ziyadahProgressCount,
+            ziyadahStats: metrics.ziyadahStats,
+            nuroniyyahProgressCount: metrics.nuroniyyahProgressCount,
+            nuroniyyahStats: metrics.nuroniyyahStats,
+            iqraProgressCount: metrics.iqraProgressCount,
+            iqraStats: metrics.iqraStats
           };
         })
       );
@@ -2514,11 +2712,17 @@ export class ApiService {
             evaluationCoverage: metrics.evaluationCoverage,
             completionRateAmongEvaluated: metrics.completionRateAmongEvaluated,
             stats: metrics.stats,
-            totalLines: metrics.stats.totalLines,
-            meanLines: metrics.stats.mean,
-            medianLines: metrics.stats.median,
-            stdDev: metrics.stats.stdDev,
-            cv: metrics.stats.cv
+            totalLines: metrics.ziyadahStats.totalLines,
+            meanLines: metrics.ziyadahStats.mean,
+            medianLines: metrics.ziyadahStats.median,
+            stdDev: metrics.ziyadahStats.stdDev,
+            cv: metrics.ziyadahStats.cv,
+            ziyadahProgressCount: metrics.ziyadahProgressCount,
+            ziyadahStats: metrics.ziyadahStats,
+            nuroniyyahProgressCount: metrics.nuroniyyahProgressCount,
+            nuroniyyahStats: metrics.nuroniyyahStats,
+            iqraProgressCount: metrics.iqraProgressCount,
+            iqraStats: metrics.iqraStats
           };
         })
       );
@@ -2550,6 +2754,12 @@ export class ApiService {
         completionRateAmongEvaluated: 0,
         stats: calculateStats([]),
         distributionBuckets: [],
+        ziyadahProgressCount: 0,
+        ziyadahStats: calculateStats([]),
+        nuroniyyahProgressCount: 0,
+        nuroniyyahStats: calculateStats([]),
+        iqraProgressCount: 0,
+        iqraStats: calculateStats([]),
         skillTransitions: [],
         notEvaluatedSkillCount: 0,
         cohortSize: cohortStudentIds ? cohortStudentIds.size : 0

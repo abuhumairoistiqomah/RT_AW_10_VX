@@ -128,6 +128,7 @@ export interface Halaqah {
   session_group_id: string;
   location: string;
   target_ziyadah_lines?: number;
+  target_nuroniyyah_lines?: number;
   target_iqra_pages?: number;
   active: boolean;
   notes?: string;
@@ -152,7 +153,7 @@ export interface EventParticipant {
   student_id: string;
   class_snapshot: string;
   grade_snapshot: string;
-  skill_status_start: SkillStatus;
+  skill_status_start?: SkillStatus | string;
   halaqah_id?: string;
   session_group_id?: string;
   baseline_surah?: number;
@@ -164,6 +165,7 @@ export interface EventParticipant {
   target_surah_end?: number;
   target_ayah_end?: number;
   target_lines?: number;
+  target_nuroniyyah_lines?: number;
   target_iqra_pages?: number;
   target_source?: TargetSource;
   target_note?: string;
@@ -173,7 +175,7 @@ export interface EventParticipant {
   updated_at: string;
 }
 
-export type AssessmentMode = 'ZIYADAH' | 'IQRA';
+export type AssessmentMode = 'ZIYADAH' | 'NURONIYYAH' | 'IQRA';
 export type AssessmentStatus = 'PENDING' | 'COMPLETED';
 
 export interface SessionAssessment {
@@ -193,9 +195,11 @@ export interface SessionAssessment {
   surah_end?: number;
   ayah_end?: number;
   lines_added?: number;
+  nuroniyyah_dars?: string;
   iqra_level?: number;
   iqra_page_start?: number;
   iqra_page_end?: number;
+  iqra_pages_added?: number;
   session_note?: string;
   teacher_id: string;
   is_deleted: boolean;
@@ -317,10 +321,14 @@ export interface TeacherStudentSummary {
   target_surah_end?: number;
   target_ayah_end?: number;
   target_lines?: number;
+  target_nuroniyyah_lines?: number;
   target_iqra_pages?: number;
   target_source?: TargetSource;
   targetText: string;
   totalLinesAdded: number;
+  totalZiyadahLinesAdded?: number;
+  totalNuroniyyahLinesAdded?: number;
+  totalIqraPagesAdded?: number;
   completionStatus: string;
   session_group_id?: string;
 }
@@ -338,6 +346,9 @@ export interface TeacherWorkspaceBootstrap {
     grade_group?: string;
     session_group_id?: string;
     location?: string;
+    target_ziyadah_lines?: number;
+    target_nuroniyyah_lines?: number;
+    target_iqra_pages?: number;
     active: boolean;
   } | null;
   availableHalaqahs: Halaqah[];
